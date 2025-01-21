@@ -1,0 +1,88 @@
+# Script to update Teams Voice Routing Policy
+# Requires Teams PowerShell Module to be installed
+
+# Parameters
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$CsvPath,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$LogPath = ".\VoiceRoutingPolicyUpdate_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+)
+
+# Function to write to log file
+function Write-Log {
+    param($Message)
+    
+    $LogMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'): $Message"
+    Add-Content -Path $LogPath -Value $LogMessage
+    Write-Host $LogMessage
+}
+
+# Check if Teams module is installed and connected
+try {
+    $module = Get-Module -Name MicrosoftTeams -ListAvailable
+    if (-not $module) {
+        throw "Microsoft Teams PowerShell module is not installed. Please install it using: Install-Module -Name MicrosoftTeams"
+    }
+    
+    # Check if already connected to Teams
+    $teamsConnection = Get-CsOnlineConnection -ErrorAction SilentlyContinue
+    if (-not $teamsConnection) {
+        Write-Log "Connecting to Microsoft Teams..."
+        Connect-MicrosoftTeams
+    }
+} catch {
+    Write-Log "Error: $_"
+    exit 1
+}
+
+# Check if CSV file exists
+if (-not (Test-Path $CsvPath)) {
+    Write-Log "Error: CSV file not found at path: $CsvPath"
+    exit 1
+}
+
+# Create log file
+Write-Log "Starting Voice Routing Policy update process"
+Write-Log "CSV Path: $CsvPath"
+
+# Import CSV
+try {
+    $users = Import-Csv -Path $CsvPath
+    Write-Log "Successfully imported CSV with $($users.Count) users"
+} catch {
+    Write-Log "Error importing CSV: $_"
+    exit 1
+}
+
+# Process each user
+foreach ($user in $users) {
+    try {
+        $userUPN = $user.UserPrincipalName # Assuming the CSV has a column named 'UserPrincipalName'
+        
+        if (-not $userUPN) {
+            Write-Log "Error: Empty UserPrincipalName found in CSV"
+            continue
+        }
+
+        Write-Log "Processing user: $userUPN"
+        
+        # Set voice routing policy to null (remove custom policy assignment)
+        Grant-CsOnlineVoiceRoutingPolicy -Identity $userUPN -PolicyName $null
+        Write-Log "Successfully reset voice routing policy for user: $userUPN"
+        
+    } catch {
+        Write-Log "Error processing user $userUPN : $_"
+    }
+}
+
+Write-Log "Voice Routing Policy update process completed"
+
+# Disconnect from Teams
+try {
+    Disconnect-MicrosoftTeams
+    Write-Log "Successfully disconnected from Microsoft Teams"
+} catch {
+    Write-Log "Error disconnecting from Microsoft Teams: $_"
+}
