@@ -1,0 +1,337 @@
+# Requires the Microsoft.Graph PowerShell module
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Class to track selected users
+class UserSelectionManager {
+    [System.Collections.Generic.HashSet[string]]$SelectedUsers
+
+    UserSelectionManager() {
+        $this.SelectedUsers = [System.Collections.Generic.HashSet[string]]::new()
+    }
+
+    [void] AddSelection([string]$user) {
+        $this.SelectedUsers.Add($user)
+    }
+
+    [void] RemoveSelection([string]$user) {
+        $this.SelectedUsers.Remove($user)
+    }
+
+    [bool] IsSelected([string]$user) {
+        return $this.SelectedUsers.Contains($user)
+    }
+
+    [string[]] GetAllSelected() {
+        return [string[]]($this.SelectedUsers)
+    }
+}
+
+$script:selectionManager = [UserSelectionManager]::new()
+
+function Write-ToLog {
+    param([string]$Message)
+    $logPath = "EntraManagement_$(Get-Date -Format 'yyyyMMdd').log"
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "$timestamp - $Message" | Out-File -FilePath $logPath -Append
+}
+
+function Connect-ToGraph {
+    try {
+        Connect-MgGraph -Scopes "User.Read.All", "Group.ReadWrite.All"
+        Write-ToLog "Successfully connected to Microsoft Graph"
+        return $true
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to connect to Microsoft Graph: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        Write-ToLog "Failed to connect to Microsoft Graph: $_"
+        return $false
+    }
+}
+
+# Create main form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Entra ID User Management"
+$form.Size = New-Object System.Drawing.Size(800, 800)
+$form.StartPosition = "CenterScreen"
+
+# Create controls
+$userSearchLabel = New-Object System.Windows.Forms.Label
+$userSearchLabel.Location = New-Object System.Drawing.Point(10, 20)
+$userSearchLabel.Size = New-Object System.Drawing.Size(100, 20)
+$userSearchLabel.Text = "Search Users:"
+$form.Controls.Add($userSearchLabel)
+
+$userSearchBox = New-Object System.Windows.Forms.TextBox
+$userSearchBox.Location = New-Object System.Drawing.Point(120, 20)
+$userSearchBox.Size = New-Object System.Drawing.Size(200, 20)
+$form.Controls.Add($userSearchBox)
+
+$selectedCountLabel = New-Object System.Windows.Forms.Label
+$selectedCountLabel.Location = New-Object System.Drawing.Point(10, 260)
+$selectedCountLabel.Size = New-Object System.Drawing.Size(200, 20)
+$selectedCountLabel.Text = "Selected Users: 0"
+$form.Controls.Add($selectedCountLabel)
+
+$userListBox = New-Object System.Windows.Forms.ListBox
+$userListBox.Location = New-Object System.Drawing.Point(10, 50)
+$userListBox.Size = New-Object System.Drawing.Size(310, 200)
+$userListBox.SelectionMode = "MultiExtended"
+$form.Controls.Add($userListBox)
+
+# Add Selected Users List
+$selectedUsersLabel = New-Object System.Windows.Forms.Label
+$selectedUsersLabel.Location = New-Object System.Drawing.Point(10, 290)
+$selectedUsersLabel.Size = New-Object System.Drawing.Size(200, 20)
+$selectedUsersLabel.Text = "Selected Users:"
+$form.Controls.Add($selectedUsersLabel)
+
+$selectedUsersListBox = New-Object System.Windows.Forms.ListBox
+$selectedUsersListBox.Location = New-Object System.Drawing.Point(10, 310)
+$selectedUsersListBox.Size = New-Object System.Drawing.Size(310, 200)
+$selectedUsersListBox.SelectionMode = "MultiExtended"
+$form.Controls.Add($selectedUsersListBox)
+
+$clearSelectionsButton = New-Object System.Windows.Forms.Button
+$clearSelectionsButton.Location = New-Object System.Drawing.Point(340, 310)
+$clearSelectionsButton.Size = New-Object System.Drawing.Size(150, 30)
+$clearSelectionsButton.Text = "Clear Selections"
+$form.Controls.Add($clearSelectionsButton)
+
+$removeSelectionButton = New-Object System.Windows.Forms.Button
+$removeSelectionButton.Location = New-Object System.Drawing.Point(340, 350)
+$removeSelectionButton.Size = New-Object System.Drawing.Size(150, 30)
+$removeSelectionButton.Text = "Remove Selected"
+$form.Controls.Add($removeSelectionButton)
+
+$groupSearchLabel = New-Object System.Windows.Forms.Label
+$groupSearchLabel.Location = New-Object System.Drawing.Point(340, 20)
+$groupSearchLabel.Size = New-Object System.Drawing.Size(100, 20)
+$groupSearchLabel.Text = "Search Groups:"
+$form.Controls.Add($groupSearchLabel)
+
+$groupSearchBox = New-Object System.Windows.Forms.TextBox
+$groupSearchBox.Location = New-Object System.Drawing.Point(450, 20)
+$groupSearchBox.Size = New-Object System.Drawing.Size(200, 20)
+$form.Controls.Add($groupSearchBox)
+
+$groupListBox = New-Object System.Windows.Forms.ListBox
+$groupListBox.Location = New-Object System.Drawing.Point(340, 50)
+$groupListBox.Size = New-Object System.Drawing.Size(310, 200)
+$form.Controls.Add($groupListBox)
+
+$addButton = New-Object System.Windows.Forms.Button
+$addButton.Location = New-Object System.Drawing.Point(10, 520)
+$addButton.Size = New-Object System.Drawing.Size(150, 30)
+$addButton.Text = "Add to Group"
+$form.Controls.Add($addButton)
+
+$statusLabel = New-Object System.Windows.Forms.Label
+$statusLabel.Location = New-Object System.Drawing.Point(10, 560)
+$statusLabel.Size = New-Object System.Drawing.Size(640, 40)
+$statusLabel.Text = "Ready..."
+$form.Controls.Add($statusLabel)
+
+# Function to update selected users list
+function Update-SelectedUsersList {
+    $selectedUsersListBox.Items.Clear()
+    $selectedUsers = $script:selectionManager.GetAllSelected()
+    foreach ($user in $selectedUsers) {
+        $selectedUsersListBox.Items.Add($user)
+    }
+    Update-SelectedCount
+}
+
+# Update selected count
+function Update-SelectedCount {
+    $count = $script:selectionManager.GetAllSelected().Count
+    $selectedCountLabel.Text = "Selected Users: $count"
+}
+
+# Selection change event
+$userListBox.Add_SelectedIndexChanged({
+    $selectedItems = @($userListBox.SelectedItems)
+    foreach ($item in $selectedItems) {
+        $script:selectionManager.AddSelection($item)
+    }
+    Update-SelectedUsersList
+})
+
+# Search users handler
+$userSearchBox.Add_KeyUp({
+    if ($_.KeyCode -eq "Enter") {
+        $currentSelections = $script:selectionManager.GetAllSelected()
+        $userListBox.BeginUpdate()
+        try {
+            $userListBox.Items.Clear()
+            $searchTerm = $userSearchBox.Text
+            $users = Get-MgUser -Filter "startsWith(displayName,'$searchTerm') or startsWith(surname,'$searchTerm') or startsWith(givenName,'$searchTerm')" -Top 50
+            
+            foreach ($user in $users) {
+                $userItem = "$($user.DisplayName) ($($user.UserPrincipalName))"
+                $userListBox.Items.Add($userItem)
+                
+                if ($currentSelections -contains $userItem) {
+                    $index = $userListBox.Items.Count - 1
+                    $userListBox.SetSelected($index, $true)
+                }
+            }
+            Write-ToLog "Searched for users with term: $searchTerm"
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show("Error searching users: $_", "Error")
+            Write-ToLog "Error searching users: $_"
+        }
+        finally {
+            $userListBox.EndUpdate()
+        }
+    }
+})
+
+# Search groups handler
+$groupSearchBox.Add_KeyUp({
+    if ($_.KeyCode -eq "Enter") {
+        $groupListBox.Items.Clear()
+        $searchTerm = $groupSearchBox.Text
+        try {
+            $groups = Get-MgGroup -Filter "startsWith(displayName,'$searchTerm')" -Top 50
+            foreach ($group in $groups) {
+                $groupListBox.Items.Add("$($group.DisplayName)")
+            }
+            Write-ToLog "Searched for groups with term: $searchTerm"
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show("Error searching groups: $_", "Error")
+            Write-ToLog "Error searching groups: $_"
+        }
+    }
+})
+
+# Preview confirmation form
+function Show-PreviewConfirmation {
+    param (
+        [string[]]$Users,
+        [string]$GroupName
+    )
+    
+    $previewForm = New-Object System.Windows.Forms.Form
+    $previewForm.Text = "Confirm User Addition"
+    $previewForm.Size = New-Object System.Drawing.Size(500, 400)
+    $previewForm.StartPosition = "CenterScreen"
+    
+    $previewLabel = New-Object System.Windows.Forms.Label
+    $previewLabel.Location = New-Object System.Drawing.Point(10, 10)
+    $previewLabel.Size = New-Object System.Drawing.Size(460, 40)
+    $previewLabel.Text = "The following users will be added to group: $GroupName"
+    $previewForm.Controls.Add($previewLabel)
+    
+    $previewListBox = New-Object System.Windows.Forms.ListBox
+    $previewListBox.Location = New-Object System.Drawing.Point(10, 50)
+    $previewListBox.Size = New-Object System.Drawing.Size(460, 250)
+    foreach ($user in $Users) {
+        $previewListBox.Items.Add($user)
+    }
+    $previewForm.Controls.Add($previewListBox)
+    
+    $confirmButton = New-Object System.Windows.Forms.Button
+    $confirmButton.Location = New-Object System.Drawing.Point(10, 310)
+    $confirmButton.Size = New-Object System.Drawing.Size(100, 30)
+    $confirmButton.Text = "Confirm"
+    $confirmButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $previewForm.Controls.Add($confirmButton)
+    
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(120, 310)
+    $cancelButton.Size = New-Object System.Drawing.Size(100, 30)
+    $cancelButton.Text = "Cancel"
+    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $previewForm.Controls.Add($cancelButton)
+    
+    $previewForm.AcceptButton = $confirmButton
+    $previewForm.CancelButton = $cancelButton
+    
+    return $previewForm.ShowDialog()
+}
+
+# Add button handler
+$addButton.Add_Click({
+    $selectedItems = $script:selectionManager.GetAllSelected()
+    if ($selectedItems.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Please select at least one user", "Warning")
+        return
+    }
+    
+    if ($groupListBox.SelectedItem -eq $null) {
+        [System.Windows.Forms.MessageBox]::Show("Please select a group", "Warning")
+        return
+    }
+    
+    # Show preview confirmation
+    $result = Show-PreviewConfirmation -Users $selectedItems -GroupName $groupListBox.SelectedItem
+    
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        try {
+            $selectedGroup = Get-MgGroup -Filter "displayName eq '$($groupListBox.SelectedItem)'" | Select-Object -First 1
+            $addedUsers = @()
+            
+            foreach ($selectedUser in $selectedItems) {
+                $upn = $selectedUser -replace '.+\((.*)\)', '$1'
+                $user = Get-MgUser -Filter "userPrincipalName eq '$upn'"
+                
+                New-MgGroupMember -GroupId $selectedGroup.Id -DirectoryObjectId $user.Id
+                $addedUsers += $user.DisplayName
+                Write-ToLog "Added user $($user.DisplayName) to group $($selectedGroup.DisplayName)"
+            }
+            
+            $confirmationMessage = "Successfully added the following users to $($selectedGroup.DisplayName):`n`n"
+            $confirmationMessage += $addedUsers -join "`n"
+            [System.Windows.Forms.MessageBox]::Show($confirmationMessage, "Success")
+            
+            $statusLabel.Text = "Successfully added $($addedUsers.Count) users to group"
+            
+            $continue = [System.Windows.Forms.MessageBox]::Show(
+                "Users have been added successfully. Do you want to continue adding more users?",
+                "Continue?",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo)
+                
+            if ($continue -eq [System.Windows.Forms.DialogResult]::No) {
+                Write-ToLog "User chose to exit application"
+                Disconnect-MgGraph
+                Write-ToLog "Disconnected from Microsoft Graph"
+                $form.Close()
+            }
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show("Error adding users to group: $_", "Error")
+            Write-ToLog "Error adding users to group: $_"
+        }
+    }
+})
+
+# Clear selections button handler
+$clearSelectionsButton.Add_Click({
+    $script:selectionManager = [UserSelectionManager]::new()
+    $userListBox.ClearSelected()
+    Update-SelectedUsersList
+    Write-ToLog "Cleared all user selections"
+})
+
+# Remove selection button handler
+$removeSelectionButton.Add_Click({
+    $selectedUsers = @($selectedUsersListBox.SelectedItems)
+    foreach ($user in $selectedUsers) {
+        $script:selectionManager.RemoveSelection($user)
+    }
+    Update-SelectedUsersList
+    Write-ToLog "Removed selected users from selection"
+})
+
+# Connect and show form
+if (Connect-ToGraph) {
+    $form.Add_FormClosing({
+    Disconnect-MgGraph
+    Write-ToLog "Disconnected from Microsoft Graph"
+})
+
+$form.ShowDialog()
+}
