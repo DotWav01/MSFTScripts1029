@@ -41,16 +41,24 @@ function Get-CloudPCUsage {
         [int]$DaysFilter
     )
     
-    $filterDate = (Get-Date).AddDays(-$DaysFilter).ToString("yyyy-MM-dd")
+    # Format date in ISO 8601 format with timezone
+    $filterDate = [System.Web.HttpUtility]::UrlEncode((Get-Date).AddDays(-$DaysFilter).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))
+    
     $filter = if ($DaysFilter -eq 60) {
-        "lastConnectDateTime lt $filterDate"
+        "`$filter=lastConnectDateTime lt ${filterDate}"
     } else {
-        "lastConnectDateTime ge $filterDate"
+        "`$filter=lastConnectDateTime ge ${filterDate}"
     }
     
     try {
         $allResults = @()
-        $uri = "https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint/reports/getCloudPCConnectivityHistory?`$filter=$filter&`$top=999"
+        # Add System.Web for URL encoding
+        Add-Type -AssemblyName System.Web
+
+        $baseUri = "https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint/reports/getCloudPCConnectivityHistory"
+        $uri = "${baseUri}?${filter}&`$top=999"
+        
+        Write-Host "Request URI: $uri" -ForegroundColor Yellow  # Debug output
         
         do {
             $response = Invoke-RestMethod -Uri $uri -Headers $Headers -Method GET -TimeoutSec 120
