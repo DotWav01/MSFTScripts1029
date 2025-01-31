@@ -4,8 +4,15 @@ $clientId = "<your-client-id>"
 $clientSecret = "<your-client-secret>"
 
 try {
-    # Connect to Microsoft Graph with explicit scope
-    Connect-MgGraph -ClientId $clientId -TenantId $tenantId -ClientSecret $clientSecret -Scopes "CloudPC.Read.All"
+    # Create credential object
+    $tokenBody = @{
+        Grant_Type    = "client_credentials"
+        Scope         = "https://graph.microsoft.com/.default"
+        Client_Id     = $clientId
+        Client_Secret = $clientSecret
+    }
+    
+    Connect-MgGraph -ClientId $clientId -TenantId $tenantId -ClientSecretCredential $clientSecret
     
     # Test connection
     $testConnection = Get-MgContext
