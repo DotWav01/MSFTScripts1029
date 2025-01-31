@@ -96,13 +96,25 @@ function Get-AllCloudPCReports {
         return
     }
 
-    # Connect to Microsoft Graph if not already connected
+    # App registration authentication parameters
+    $tenantId = "<your-tenant-id>"
+    $clientId = "<your-client-id>"
+    $clientSecret = "<your-client-secret>"
+
+    # Connect to Microsoft Graph using app registration
     try {
         Get-MgContext -ErrorAction Stop
     }
     catch {
         Write-Host "Connecting to Microsoft Graph..."
-        Connect-MgGraph -Scopes "DeviceManagementVirtualEndpoint.Read.All"
+        $body = @{
+            Grant_Type    = "client_credentials"
+            Scope        = "https://graph.microsoft.com/.default"
+            Client_Id    = $clientId
+            Client_Secret = $clientSecret
+        }
+        
+        Connect-MgGraph -ClientId $clientId -TenantId $tenantId -ClientSecret $clientSecret
     }
 
     $timeFrames = @("24hours", "1week", "2weeks", "4weeks", "inactive60days")
@@ -117,4 +129,4 @@ function Get-AllCloudPCReports {
 }
 
 # Export functions
-Export-ModuleMember -Function Get-AllCloudPCReports, Get-CloudPCUsageReport
+Export-ModuleMember -Function Get-AllCloudPCReports
