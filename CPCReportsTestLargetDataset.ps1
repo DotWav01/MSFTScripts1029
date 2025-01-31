@@ -1,153 +1,120 @@
-# Import required modules
-Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
-Install-Module Microsoft.Graph.DeviceManagement -Scope CurrentUser
-Install-Module ImportExcel -Scope CurrentUser
+# Cloud PC Usage Report Script
+# Requires Microsoft.Graph.Beta module
 
-# Authentication parameters
-$tenantId = "YOUR_TENANT_ID"
-$clientId = "YOUR_CLIENT_ID"
-$clientSecret = "YOUR_CLIENT_SECRET"
-
-# Function to connect to Microsoft Graph
-function Connect-ToGraph {
-    try {
-        $tokenBody = @{
-            Grant_Type    = "client_credentials"
-            Scope        = "https://graph.microsoft.com/.default"
-            Client_Id    = $clientId
-            Client_Secret = $clientSecret
-        }
-        
-        $tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token" -Method POST -Body $tokenBody
-        $headers = @{
-            "Authorization" = "Bearer $($tokenResponse.access_token)"
-            "Content-Type"  = "application/json"
-        }
-        return $headers
-    }
-    catch {
-        Write-Error "Failed to connect to Microsoft Graph: $_"
-        exit 1
-    }
-}
-
-# Function to get Cloud PC usage data with filter
-function Get-CloudPCUsage {
+# Function to format the output as a readable table
+function Format-CloudPCReport {
     param (
-        [Parameter(Mandatory=$true)]
-        [hashtable]$Headers,
-        
-        [Parameter(Mandatory=$true)]
-        [int]$DaysFilter
+        [Parameter(Mandatory = $true)]
+        [Object[]]$Reports
     )
     
-    # Format date in ISO 8601 format with timezone
-    $filterDate = [System.Web.HttpUtility]::UrlEncode((Get-Date).AddDays(-$DaysFilter).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))
-    
-    $filter = if ($DaysFilter -eq 60) {
-        "`$filter=lastConnectDateTime lt ${filterDate}"
-    } else {
-        "`$filter=lastConnectDateTime ge ${filterDate}"
-    }
-    
-    try {
-        $allResults = @()
-        # Add System.Web for URL encoding
-        Add-Type -AssemblyName System.Web
+    $Reports | Format-Table -AutoSize -Property `
+        @{Name = 'PC Name'; Expression = { $_.ManagedDeviceName } },
+        @{Name = 'User'; Expression = { $_.UserPrincipalName } },
+        @{Name = 'Usage (Hours)'; Expression = { [math]::Round($_.TotalUsageInHour, 2) } },
+        @{Name = 'Last Active'; Expression = { $_.LastActiveTime } },
+        @{Name = 'PC Type'; Expression = { $_.PcType } }
+}
 
-        $baseUri = "https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint/reports/getCloudPCConnectivityHistory"
-        $uri = "${baseUri}?${filter}&`$top=999"
-        
-        Write-Host "Request URI: $uri" -ForegroundColor Yellow  # Debug output
-        
+# Function to get report with specific time filter
+function Get-CloudPCUsageReport {
+    param (
+        [Parameter(Mandatory = $true)]
+        [String]$TimeFrame
+    )
+
+    $baseParams = @{
+        top = 999  # Maximum allowed per request
+        skip = 0
+        select = @(
+            "CloudPcId"
+            "ManagedDeviceName"
+            "UserPrincipalName"
+            "TotalUsageInHour"
+            "LastActiveTime"
+            "PcType"
+            "CreatedDate"
+        )
+    }
+
+    # Calculate the date ranges
+    $now = Get-Date
+    switch ($TimeFrame) {
+        "24hours" {
+            $hours = 24
+            $baseParams.filter = "(LastActiveTime gt $($now.AddHours(-$hours).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
+        }
+        "1week" {
+            $days = 7
+            $baseParams.filter = "(LastActiveTime gt $($now.AddDays(-$days).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
+        }
+        "2weeks" {
+            $days = 14
+            $baseParams.filter = "(LastActiveTime gt $($now.AddDays(-$days).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
+        }
+        "4weeks" {
+            $days = 28
+            $baseParams.filter = "(LastActiveTime gt $($now.AddDays(-$days).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
+        }
+        "inactive60days" {
+            $days = 60
+            $baseParams.filter = "(LastActiveTime lt $($now.AddDays(-$days).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
+        }
+        default {
+            Write-Error "Invalid time frame specified. Valid options: 24hours, 1week, 2weeks, 4weeks, inactive60days"
+            return
+        }
+    }
+
+    try {
+        $allReports = @()
+        $skip = 0
         do {
-            $response = Invoke-RestMethod -Uri $uri -Headers $Headers -Method GET -TimeoutSec 120
-            
-            if ($response.value) {
-                $allResults += $response.value
-                Write-Host "Retrieved $($allResults.Count) records so far..."
-            }
-            
-            $uri = $response.'@odata.nextLink'
-        } while ($uri)
-        
-        return $allResults
+            $baseParams.skip = $skip
+            $response = Get-MgBetaDeviceManagementVirtualEndpointReportTotalAggregatedRemoteConnectionReport -BodyParameter $baseParams
+            $allReports += $response
+            $skip += 999
+        } while ($response.Count -eq 999)
+        $reports = $allReports
+        if ($reports.Count -eq 0) {
+            Write-Host "No Cloud PCs found matching the specified criteria for $TimeFrame timeframe."
+            return
+        }
+        return $reports
     }
     catch {
-        Write-Error "Failed to fetch Cloud PC usage data: $_"
-        return $null
+        Write-Error "Error retrieving Cloud PC report: $_"
+        return
     }
 }
 
-# Function to create Excel report
-function Create-ExcelReport {
-    param (
-        [Parameter(Mandatory=$true)]
-        [hashtable]$Data
-    )
-    
-    $excelPath = "CloudPC_Usage_Report_$(Get-Date -Format 'yyyyMMdd_HHmmss').xlsx"
-    
+# Main script
+function Get-AllCloudPCReports {
+    # Check if Microsoft.Graph.Beta module is installed
+    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Beta)) {
+        Write-Error "Microsoft.Graph.Beta module is not installed. Please install it using: Install-Module Microsoft.Graph.Beta -Force"
+        return
+    }
+
+    # Connect to Microsoft Graph if not already connected
     try {
-        $excel = Open-ExcelPackage -Path $excelPath -Create
-        
-        foreach ($period in $Data.Keys) {
-            Write-Host "Creating worksheet for $period..."
-            $reportData = $Data[$period] | Select-Object `
-                @{N='Device Name';E={$_.cloudPcName}}, `
-                @{N='User Principal Name';E={$_.userPrincipalName}}, `
-                @{N='Date Created';E={$_.createDateTime}}, `
-                @{N='Last Connection Date';E={$_.lastConnectDateTime}}, `
-                @{N='Connection Duration (hours)';E={[math]::Round($_.connectionDuration/3600, 2)}}, `
-                @{N='Status';E={$_.status}}
-            
-            $reportData | Export-Excel -ExcelPackage $excel -WorksheetName $period -AutoSize -TableName $period -BoldTopRow
-            
-            # Add filters and freeze panes
-            $worksheet = $excel.Workbook.Worksheets[$period]
-            $worksheet.View.FreezePanes(2, 1)
-        }
-        
-        Close-ExcelPackage $excel
-        Write-Host "Report generated successfully: $excelPath"
+        Get-MgContext -ErrorAction Stop
     }
     catch {
-        Write-Error "Failed to create Excel report: $_"
-    }
-}
-
-# Main script execution
-try {
-    # Connect to Graph
-    $headers = Connect-ToGraph
-
-    # Define time periods for filtering
-    $timePeriods = @{
-        "Last_24_Hours" = 1
-        "Last_Week" = 7
-        "Last_2_Weeks" = 14
-        "Last_4_Weeks" = 28
-        "No_Connection_60_Days" = 60
+        Write-Host "Connecting to Microsoft Graph..."
+        Connect-MgGraph -Scopes "DeviceManagementVirtualEndpoint.Read.All"
     }
 
-    # Collect data for each time period
-    $allData = @{}
-    foreach ($period in $timePeriods.Keys) {
-        Write-Host "Fetching data for $period..."
-        $data = Get-CloudPCUsage -Headers $headers -DaysFilter $timePeriods[$period]
-        if ($data) {
-            $allData[$period] = $data
+    $timeFrames = @("24hours", "1week", "2weeks", "4weeks", "inactive60days")
+
+    foreach ($timeFrame in $timeFrames) {
+        Write-Host "`n=== Cloud PC Usage Report - $timeFrame ===" -ForegroundColor Cyan
+        $reports = Get-CloudPCUsageReport -TimeFrame $timeFrame
+        if ($reports) {
+            Format-CloudPCReport -Reports $reports
         }
     }
+}
 
-    # Generate Excel report
-    if ($allData.Count -gt 0) {
-        Create-ExcelReport -Data $allData
-    }
-    else {
-        Write-Error "No data collected for any time period"
-    }
-}
-catch {
-    Write-Error "Script execution failed: $_"
-}
+# Export functions
+Export-ModuleMember -Function Get-AllCloudPCReports, Get-CloudPCUsageReport
