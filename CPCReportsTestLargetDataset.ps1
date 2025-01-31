@@ -1,30 +1,29 @@
 # Cloud PC Usage Report Script
-# Requires Microsoft.Graph.Beta module
-
-# Function to format the output as a readable table
-function Format-CloudPCReport {
-    param (
-        [Parameter(Mandatory = $true)]
-        [Object[]]$Reports
-    )
-    
-    $Reports | Format-Table -AutoSize -Property `
-        @{Name = 'PC Name'; Expression = { $_.ManagedDeviceName } },
-        @{Name = 'User'; Expression = { $_.UserPrincipalName } },
-        @{Name = 'Usage (Hours)'; Expression = { [math]::Round($_.TotalUsageInHour, 2) } },
-        @{Name = 'Last Active'; Expression = { $_.LastActiveTime } },
-        @{Name = 'PC Type'; Expression = { $_.PcType } }
-}
-
 # Function to get report with specific time filter
 function Get-CloudPCUsageReport {
     param (
         [Parameter(Mandatory = $true)]
-        [String]$TimeFrame
+        [String]$TimeFrame,
+        [Parameter(Mandatory = $true)]
+        [String]$OutputPath
     )
 
+    # App registration authentication parameters
+    $tenantId = "<your-tenant-id>"
+    $clientId = "<your-client-id>"
+    $clientSecret = "<your-client-secret>"
+
+    # Connect to Microsoft Graph using app registration
+    try {
+        Get-MgContext -ErrorAction Stop
+    }
+    catch {
+        Write-Host "Connecting to Microsoft Graph..."
+        Connect-MgGraph -ClientId $clientId -TenantId $tenantId -ClientSecret $clientSecret
+    }
+
     $baseParams = @{
-        top = 999  # Maximum allowed per request
+        top = 999
         skip = 0
         select = @(
             "CloudPcId"
@@ -61,7 +60,7 @@ function Get-CloudPCUsageReport {
             $baseParams.filter = "(LastActiveTime lt $($now.AddDays(-$days).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
         }
         default {
-            Write-Error "Invalid time frame specified. Valid options: 24hours, 1week, 2weeks, 4weeks, inactive60days"
+            Write-Error "Invalid time frame specified"
             return
         }
     }
@@ -75,58 +74,36 @@ function Get-CloudPCUsageReport {
             $allReports += $response
             $skip += 999
         } while ($response.Count -eq 999)
-        $reports = $allReports
-        if ($reports.Count -eq 0) {
-            Write-Host "No Cloud PCs found matching the specified criteria for $TimeFrame timeframe."
+
+        if ($allReports.Count -eq 0) {
+            Write-Host "No Cloud PCs found for $TimeFrame timeframe."
             return
         }
-        return $reports
+
+        # Export to CSV
+        $fileName = "CloudPC_Report_$($TimeFrame)_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+        $filePath = Join-Path $OutputPath $fileName
+        $allReports | Select-Object ManagedDeviceName, UserPrincipalName, TotalUsageInHour, LastActiveTime, PcType | 
+            Export-Csv -Path $filePath -NoTypeInformation
+        Write-Host "Report exported to: $filePath"
     }
     catch {
         Write-Error "Error retrieving Cloud PC report: $_"
-        return
     }
 }
 
-# Main script
 function Get-AllCloudPCReports {
-    # Check if Microsoft.Graph.Beta module is installed
-    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Beta)) {
-        Write-Error "Microsoft.Graph.Beta module is not installed. Please install it using: Install-Module Microsoft.Graph.Beta -Force"
-        return
-    }
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$OutputPath
+    )
 
-    # App registration authentication parameters
-    $tenantId = "<your-tenant-id>"
-    $clientId = "<your-client-id>"
-    $clientSecret = "<your-client-secret>"
-
-    # Connect to Microsoft Graph using app registration
-    try {
-        Get-MgContext -ErrorAction Stop
-    }
-    catch {
-        Write-Host "Connecting to Microsoft Graph..."
-        $body = @{
-            Grant_Type    = "client_credentials"
-            Scope        = "https://graph.microsoft.com/.default"
-            Client_Id    = $clientId
-            Client_Secret = $clientSecret
-        }
-        
-        Connect-MgGraph -ClientId $clientId -TenantId $tenantId -ClientSecret $clientSecret
+    if (-not (Test-Path $OutputPath)) {
+        New-Item -ItemType Directory -Path $OutputPath -Force
     }
 
     $timeFrames = @("24hours", "1week", "2weeks", "4weeks", "inactive60days")
-
     foreach ($timeFrame in $timeFrames) {
-        Write-Host "`n=== Cloud PC Usage Report - $timeFrame ===" -ForegroundColor Cyan
-        $reports = Get-CloudPCUsageReport -TimeFrame $timeFrame
-        if ($reports) {
-            Format-CloudPCReport -Reports $reports
-        }
+        Get-CloudPCUsageReport -TimeFrame $timeFrame -OutputPath $OutputPath
     }
 }
-
-# Export functions
-Export-ModuleMember -Function Get-AllCloudPCReports
