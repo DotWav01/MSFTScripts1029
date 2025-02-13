@@ -1,0 +1,63 @@
+# Import required Exchange Online module
+Install-Module -Name ExchangeOnlineManagement -Force -AllowClobber
+Import-Module ExchangeOnlineManagement
+
+# Connect to Exchange Online (you will be prompted for credentials)
+Connect-ExchangeOnline
+
+# Import CSV file
+$rooms = Import-Csv -Path ".\rooms.csv"
+
+# Loop through each room in the CSV
+foreach ($room in $rooms) {
+    try {
+        # Create new mailbox as room resource
+        New-Mailbox -Name $room.DisplayName `
+                   -DisplayName $room.DisplayName `
+                   -PrimarySmtpAddress $room.EmailAddress `
+                   -Room
+
+        # Wait for mailbox creation to complete
+        Start-Sleep -Seconds 10
+
+        # Set room properties including extended attributes
+        Set-Place -Identity $room.EmailAddress `
+                  -Capacity $room.Capacity `
+                  -City $room.City `
+                  -State $room.State `
+                  -Floor $room.Floor `
+                  -Building $room.Building `
+                  -CountryOrRegion $room.Country `
+                  -Street $room.Street `
+                  -PostalCode $room.PostalCode
+
+        # Configure room mailbox properties
+        Set-CalendarProcessing -Identity $room.EmailAddress `
+                              -AutomateProcessing AutoAccept `
+                              -AddOrganizerToSubject $true `
+                              -DeleteComments $false `
+                              -DeleteSubject $false `
+                              -AllowConflicts $([System.Convert]::ToBoolean($room.AllowConflicts)) `
+                              -BookingWindowInDays $room.BookingWindowInDays
+
+        # Set mailbox regional configuration
+        Set-MailboxRegionalConfiguration -Identity $room.EmailAddress `
+                                       -TimeZone $room.TimeZone
+
+        Write-Host "Successfully created and configured room: $($room.DisplayName)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Error creating room $($room.DisplayName): $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Disconnect from Exchange Online
+Disconnect-ExchangeOnline -Confirm:$false
+
+# Sample CSV format (save as rooms.csv):
+<#
+EmailAddress,DisplayName,Capacity,City,State,Floor,Building,Country,Street,PostalCode,AllowConflicts,BookingWindowInDays,TimeZone
+room1@contoso.com,Conference Room 1,10,New York,NY,3,Building A,United States,123 Main St,10001,false,180,Eastern Standard Time
+room2@contoso.com,Meeting Room 2,6,Seattle,WA,2,Building B,United States,456 Pine St,98101,false,90,Pacific Standard Time
+room3@contoso.com,Board Room,15,Chicago,IL,5,Tower C,United States,789 State St,60601,false,365,Central Standard Time
+#>
