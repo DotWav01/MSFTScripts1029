@@ -1,0 +1,197 @@
+# Check if Azure PowerShell module is installed
+if (-not (Get-Module -ListAvailable -Name Az)) {
+    Write-Host "Azure PowerShell module not found. Please install it using: Install-Module -Name Az" -ForegroundColor Red
+    exit
+}
+
+# Function to validate email format
+function Is-ValidEmail {
+    param([string]$Email)
+    $EmailRegex = '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return $Email -match $EmailRegex
+}
+
+# Function to write to log file
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$LogPath
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "$timestamp - $Message" | Out-File -FilePath $LogPath -Append
+}
+
+try {
+    # Set up logging
+    $logFolder = "AzureRoleAssignmentLogs"
+    $logPath = Join-Path -Path $PWD -ChildPath $logFolder
+    if (-not (Test-Path $logPath)) {
+        New-Item -ItemType Directory -Path $logPath | Out-Null
+    }
+    $logFile = Join-Path -Path $logPath -ChildPath "RoleAssignment_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+    Write-Log -Message "Script execution started" -LogPath $logFile
+
+    # Check if already connected to Azure
+    $context = Get-AzContext
+    if (-not $context) {
+        Write-Host "Please connect to Azure first using Connect-AzAccount" -ForegroundColor Yellow
+        Write-Log -Message "No Azure context found. Requesting user to connect." -LogPath $logFile
+        Connect-AzAccount
+    }
+
+    # Get tenant details
+    $tenantId = (Get-AzContext).Tenant.Id
+    $tenantName = (Get-AzTenant -TenantId $tenantId).Name
+    Write-Log -Message "Operating in tenant: $tenantName ($tenantId)" -LogPath $logFile
+
+    # Get user email
+    do {
+        $userEmail = Read-Host "Enter the user's email address"
+        if (-not (Is-ValidEmail $userEmail)) {
+            Write-Host "Invalid email format. Please try again." -ForegroundColor Red
+            Write-Log -Message "Invalid email format attempted: $userEmail" -LogPath $logFile
+        }
+    } while (-not (Is-ValidEmail $userEmail))
+    Write-Log -Message "Target user email: $userEmail" -LogPath $logFile
+
+    # Get subscription ID
+    $subscriptionId = Read-Host "Enter the subscription ID"
+    Write-Log -Message "Target subscription ID: $subscriptionId" -LogPath $logFile
+    
+    # Verify subscription exists and set context
+    try {
+        Set-AzContext -SubscriptionId $subscriptionId
+        Write-Log -Message "Successfully set context to subscription: $subscriptionId" -LogPath $logFile
+    }
+    catch {
+        $errorMessage = "Invalid subscription ID or access denied. Error: $_"
+        Write-Host $errorMessage -ForegroundColor Red
+        Write-Log -Message $errorMessage -LogPath $logFile
+        exit
+    }
+
+    # Get available roles
+    Write-Host "`nAvailable Azure roles:" -ForegroundColor Green
+    $roles = Get-AzRoleDefinition | Where-Object { $_.IsCustom -eq $false } | Select-Object Name | Sort-Object Name
+    $roles | Format-Table -AutoSize
+
+    # Get role name
+    do {
+        $roleName = Read-Host "Enter the role name (exactly as shown above)"
+        $roleExists = Get-AzRoleDefinition -Name $roleName -ErrorAction SilentlyContinue
+        if (-not $roleExists) {
+            Write-Host "Role not found. Please enter a valid role name." -ForegroundColor Red
+            Write-Log -Message "Invalid role name attempted: $roleName" -LogPath $logFile
+        }
+    } while (-not $roleExists)
+    Write-Log -Message "Selected role: $roleName" -LogPath $logFile
+
+    # Ask for scope level
+    do {
+        $scopeLevel = Read-Host "Enter scope level (S for Subscription, R for Resource Group)"
+        $scopeLevel = $scopeLevel.ToUpper()
+        if ($scopeLevel -ne "S" -and $scopeLevel -ne "R") {
+            Write-Host "Invalid input. Please enter 'S' or 'R'" -ForegroundColor Red
+            Write-Log -Message "Invalid scope level attempted: $scopeLevel" -LogPath $logFile
+        }
+    } while ($scopeLevel -ne "S" -and $scopeLevel -ne "R")
+    Write-Log -Message "Selected scope level: $($scopeLevel -eq 'S' ? 'Subscription' : 'Resource Group')" -LogPath $logFile
+
+    # Handle Resource Group scope
+    if ($scopeLevel -eq "R") {
+        # Get available resource groups
+        Write-Host "`nAvailable Resource Groups:" -ForegroundColor Green
+        Get-AzResourceGroup | Format-Table ResourceGroupName, Location
+
+        do {
+            $resourceGroupName = Read-Host "Enter the resource group name"
+            $rgExists = Get-AzResourceGroup -Name $resourceGroupName -ErrorAction SilentlyContinue
+            if (-not $rgExists) {
+                Write-Host "Resource Group not found. Please enter a valid name." -ForegroundColor Red
+                Write-Log -Message "Invalid resource group attempted: $resourceGroupName" -LogPath $logFile
+            }
+        } while (-not $rgExists)
+        Write-Log -Message "Selected resource group: $resourceGroupName" -LogPath $logFile
+    }
+
+    # Confirm the assignment
+    Write-Host "`nRole Assignment Summary:" -ForegroundColor Green
+    Write-Host "User Email: $userEmail"
+    Write-Host "Role: $roleName"
+    Write-Host "Subscription ID: $subscriptionId"
+    Write-Host "Tenant: $tenantName ($tenantId)"
+    if ($scopeLevel -eq "R") {
+        Write-Host "Resource Group: $resourceGroupName"
+    }
+    
+    $confirm = Read-Host "`nDo you want to proceed with this assignment? (Y/N)"
+    if ($confirm.ToUpper() -eq "Y") {
+        try {
+            # Get user object ID
+            $user = Get-AzADUser -UserPrincipalName $userEmail
+            if (-not $user) {
+                throw "User not found in Azure AD"
+            }
+
+            # Create role assignment
+            if ($scopeLevel -eq "S") {
+                $scope = "/subscriptions/$subscriptionId"
+                New-AzRoleAssignment -ObjectId $user.Id `
+                                   -RoleDefinitionName $roleName `
+                                   -Scope $scope
+                
+                $successMessage = @"
+
+Role Assignment Completed Successfully!
+----------------------------------------
+User: $($user.DisplayName) ($userEmail)
+Role: $roleName
+Scope: Subscription Level
+Subscription: $((Get-AzSubscription -SubscriptionId $subscriptionId).Name) ($subscriptionId)
+Tenant: $tenantName ($tenantId)
+Time: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+Log File: $logFile
+"@
+            }
+            else {
+                $scope = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName"
+                New-AzRoleAssignment -ObjectId $user.Id `
+                                   -RoleDefinitionName $roleName `
+                                   -ResourceGroupName $resourceGroupName
+                
+                $successMessage = @"
+
+Role Assignment Completed Successfully!
+----------------------------------------
+User: $($user.DisplayName) ($userEmail)
+Role: $roleName
+Scope: Resource Group Level
+Resource Group: $resourceGroupName
+Subscription: $((Get-AzSubscription -SubscriptionId $subscriptionId).Name) ($subscriptionId)
+Tenant: $tenantName ($tenantId)
+Time: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+Log File: $logFile
+"@
+            }
+            
+            Write-Host $successMessage -ForegroundColor Green
+            Write-Log -Message "Role assignment successful - $($user.DisplayName) - $roleName - $scope" -LogPath $logFile
+        }
+        catch {
+            $errorMessage = "Error creating role assignment: $_"
+            Write-Host $errorMessage -ForegroundColor Red
+            Write-Log -Message $errorMessage -LogPath $logFile
+        }
+    }
+    else {
+        Write-Host "Operation cancelled by user." -ForegroundColor Yellow
+        Write-Log -Message "Operation cancelled by user" -LogPath $logFile
+    }
+}
+catch {
+    $errorMessage = "An error occurred: $_"
+    Write-Host $errorMessage -ForegroundColor Red
+    Write-Log -Message $errorMessage -LogPath $logFile
+}
+
+Write-Log -Message "Script execution completed" -LogPath $logFile
