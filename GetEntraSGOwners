@@ -1,0 +1,87 @@
+# PowerShell Script to Export Entra ID Security Groups with Details
+# Requires Microsoft Graph PowerShell modules
+
+# Connect to Microsoft Graph
+Connect-MgGraph -Scopes "Group.Read.All", "User.Read.All", "Directory.Read.All"
+
+# Get all security groups
+Write-Host "Retrieving all security groups from Entra ID..."
+$securityGroups = Get-MgGroup -Filter "securityEnabled eq true" -All
+
+# Initialize an array to store results
+$results = @()
+
+$totalGroups = $securityGroups.Count
+$currentGroup = 0
+
+foreach ($group in $securityGroups) {
+    $currentGroup++
+    Write-Progress -Activity "Processing Security Groups" -Status "$currentGroup of $totalGroups" -PercentComplete (($currentGroup / $totalGroups) * 100)
+    
+    # Get group details
+    $groupName = $group.DisplayName
+    $groupId = $group.Id
+    
+    # Determine membership type
+    $membershipType = "Unknown"
+    if ($group.MembershipRule) {
+        $membershipType = "Dynamic"
+    } else {
+        $membershipType = "Assigned"
+    }
+    
+    # Get group owners
+    try {
+        $owners = Get-MgGroupOwner -GroupId $groupId -All
+        $ownerNames = @()
+        
+        foreach ($owner in $owners) {
+            if ($owner.AdditionalProperties.ContainsKey('@odata.type')) {
+                if ($owner.AdditionalProperties['@odata.type'] -eq '#microsoft.graph.user') {
+                    $ownerDetails = Get-MgUser -UserId $owner.Id
+                    $ownerNames += $ownerDetails.DisplayName
+                } elseif ($owner.AdditionalProperties['@odata.type'] -eq '#microsoft.graph.servicePrincipal') {
+                    $spDetails = Get-MgServicePrincipal -ServicePrincipalId $owner.Id
+                    $ownerNames += "$($spDetails.DisplayName) (Service Principal)"
+                }
+            } else {
+                # Fallback if @odata.type is not available
+                try {
+                    $ownerDetails = Get-MgUser -UserId $owner.Id -ErrorAction Stop
+                    $ownerNames += $ownerDetails.DisplayName
+                } catch {
+                    try {
+                        $spDetails = Get-MgServicePrincipal -ServicePrincipalId $owner.Id -ErrorAction Stop
+                        $ownerNames += "$($spDetails.DisplayName) (Service Principal)"
+                    } catch {
+                        $ownerNames += "Unknown Entity (ID: $($owner.Id))"
+                    }
+                }
+            }
+        }
+        
+        $ownersList = if ($ownerNames.Count -gt 0) { $ownerNames -join "; " } else { "No owners found" }
+    } catch {
+        $ownersList = "Error retrieving owners: $($_.Exception.Message)"
+    }
+    
+    # Create a custom object and add it to results
+    $groupInfo = [PSCustomObject]@{
+        'GroupName' = $groupName
+        'GroupId' = $groupId
+        'MembershipType' = $membershipType
+        'Owners' = $ownersList
+    }
+    
+    $results += $groupInfo
+}
+
+# Export to CSV
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$exportPath = "$env:USERPROFILE\Documents\EntraID_SecurityGroups_$timestamp.csv"
+$results | Export-Csv -Path $exportPath -NoTypeInformation
+
+Write-Host "Export completed successfully. File saved to: $exportPath"
+
+# Disconnect from Microsoft Graph
+Disconnect-MgGraph
