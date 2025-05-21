@@ -1,0 +1,24 @@
+# Install modules
+Install-Module Microsoft.Graph.Authentication -Force
+Install-Module Microsoft.Graph.Sites -Force
+
+# Connect to Graph
+$clientId = "your-app-client-id"
+$tenantId = "your-tenant-id"
+$clientSecret = "your-client-secret"
+
+# Connect with client secret
+$securePassword = ConvertTo-SecureString -String $clientSecret -AsPlainText -Force
+$clientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $clientId, $securePassword
+
+Connect-MgGraph -TenantId $tenantId -ClientSecretCredential $clientSecretCredential
+
+# Get site using different approaches
+try {
+    $site = Get-MgSite -SiteId "yourtenant.sharepoint.com:/sites/yoursite"
+    Write-Host "Site Name:" $site.DisplayName
+    Write-Host "Site ID:" $site.Id
+}
+catch {
+    Write-Host "Error:" $_
+}
