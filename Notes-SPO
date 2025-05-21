@@ -35,3 +35,18 @@ $headerParams
 
 #Graph API call to get site
 Invoke-WebRequest -Method Get -Headers $headerParams -Uri "https://graph.microsoft.com/v1.0/sites/contoso.sharepoint.com:/sites/demo"
+
+
+
+
+# Instead of Invoke-WebRequest, use Invoke-RestMethod to get the JSON response
+$response = Invoke-RestMethod -Method Get -Headers $headerParams -Uri "https://graph.microsoft.com/v1.0/sites/contoso.sharepoint.com:/sites/demo"
+
+# Display the site information
+Write-Host "Site Name: $($response.displayName)"
+Write-Host "Site ID: $($response.id)"
+Write-Host "Web URL: $($response.webUrl)"
+Write-Host "Description: $($response.description)"
+
+# Or see the full response
+$response | ConvertTo-Json -Depth 2
