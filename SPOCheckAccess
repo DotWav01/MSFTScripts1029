@@ -1,28 +1,106 @@
-# Get token manually
-$clientId = "your-app-client-id"
-$tenantId = "your-tenant-id"
-$clientSecret = "your-client-secret"
+<#
+.SYNOPSIS
+    Tests connection to a SharePoint site using REST API with Azure App registration.
+.DESCRIPTION
+    This script authenticates to SharePoint Online using an Azure App registration with client secret
+    and performs a test REST API call to verify connectivity.
+.EXAMPLE
+    .\Test-SharePointConnection.ps1
+#>
 
-$tokenBody = @{
-    Grant_Type    = "client_credentials"
-    Scope         = "https://graph.microsoft.com/.default"
-    Client_Id     = $clientId
-    Client_Secret = $clientSecret
+# Configuration - replace with your values
+$tenantId = "00000000-0000-0000-0000-000000000000"        # Your Azure AD tenant ID
+$clientId = "00000000-0000-0000-0000-000000000000"        # App registration client ID
+$clientSecret = "your-client-secret-value"                 # App registration client secret
+$siteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
+
+# Set TLS 1.2 as security protocol
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+Write-Host "Testing connection to SharePoint site: $siteUrl" -ForegroundColor Cyan
+
+try {
+    # Step 1: Get access token using client credentials flow
+    Write-Host "Acquiring access token..." -ForegroundColor Yellow
+    
+    $tokenEndpoint = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+    $resource = "https://yourtenant.sharepoint.com"  # Replace with your tenant
+
+    $body = @{
+        grant_type    = "client_credentials"
+        client_id     = $clientId
+        client_secret = $clientSecret
+        scope         = "$resource/.default"
+    }
+
+    $tokenResponse = Invoke-RestMethod -Uri $tokenEndpoint -Method Post -Body $body -ContentType "application/x-www-form-urlencoded"
+    $accessToken = $tokenResponse.access_token
+
+    if (-not $accessToken) {
+        throw "Failed to acquire access token."
+    }
+
+    Write-Host "Access token acquired successfully." -ForegroundColor Green
+
+    # Step 2: Test SharePoint REST API call
+    Write-Host "Testing SharePoint REST API connection..." -ForegroundColor Yellow
+    
+    $apiUrl = "$siteUrl/_api/web?`$select=Title,Url"
+    
+    $headers = @{
+        "Authorization" = "Bearer $accessToken"
+        "Accept"        = "application/json;odata=verbose"
+    }
+
+    $response = Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method Get
+    
+    # Display results
+    Write-Host "`nConnection successful!" -ForegroundColor Green
+    Write-Host "Site Title: $($response.d.Title)" -ForegroundColor Green
+    Write-Host "Site URL: $($response.d.Url)" -ForegroundColor Green
+
+    # Optional: Test listing some SharePoint lists to further verify permissions
+    Write-Host "`nFetching site lists to verify permissions..." -ForegroundColor Yellow
+    $listsUrl = "$siteUrl/_api/web/lists?`$select=Title,ItemCount&`$top=5"
+    $listsResponse = Invoke-RestMethod -Uri $listsUrl -Headers $headers -Method Get
+    
+    Write-Host "Top 5 lists in the site:" -ForegroundColor Green
+    foreach ($list in $listsResponse.d.results) {
+        Write-Host "- $($list.Title) (Items: $($list.ItemCount))" -ForegroundColor Green
+    }
 }
+catch {
+    Write-Host "`nConnection failed!" -ForegroundColor Red
+    Write-Host "Error details:" -ForegroundColor Red
+    
+    if ($_.Exception.Response) {
+        $errorResponse = $_.Exception.Response
+        $statusCode = [int]$errorResponse.StatusCode
+        
+        Write-Host "Status Code: $statusCode" -ForegroundColor Red
+        
+        if ($_.ErrorDetails.Message) {
+            try {
+                $errorContent = $_.ErrorDetails.Message | ConvertFrom-Json
+                Write-Host "Error: $($errorContent.error.message)" -ForegroundColor Red
+            }
+            catch {
+                Write-Host "Error: $($_.ErrorDetails.Message)" -ForegroundColor Red
+            }
+        }
+        else {
+            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    else {
+        Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    }
 
-$tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token" -Method POST -Body $tokenBody
-$accessToken = $tokenResponse.access_token
-
-# Make direct REST call to Graph API
-$headers = @{
-    'Authorization' = "Bearer $accessToken"
-    'Content-Type'  = 'application/json'
+    # Troubleshooting tips
+    Write-Host "`nTroubleshooting tips:" -ForegroundColor Yellow
+    Write-Host "1. Verify that the App registration has appropriate SharePoint permissions" -ForegroundColor Yellow
+    Write-Host "   - Sites.Read.All or Sites.FullControl.All API permissions" -ForegroundColor Yellow
+    Write-Host "2. Ensure permissions have been admin-consented in Azure AD" -ForegroundColor Yellow
+    Write-Host "3. Verify client ID, client secret, and tenant ID are correct" -ForegroundColor Yellow
+    Write-Host "4. Check that the SharePoint site URL is correctly formatted" -ForegroundColor Yellow
 }
-
-# Test site access
-$siteUrl = "yourtenant.sharepoint.com:/sites/yoursite"
-$encodedSiteUrl = [System.Web.HttpUtility]::UrlEncode($siteUrl)
-$response = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/sites/$encodedSiteUrl" -Headers $headers -Method Get
-
-Write-Host "Successfully connected to site:" $response.displayName
-Write-Host "Site ID:" $response.id
