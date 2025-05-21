@@ -1,0 +1,37 @@
+Notes
+
+# Decode your token to see what permissions it actually has
+$tokenParts = $accessToken.Split('.')
+$tokenPayload = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($tokenParts[1] + "=" * (4 - ($tokenParts[1].Length % 4)))))
+$tokenData = $tokenPayload | ConvertFrom-Json
+Write-Host "Token roles/permissions:"
+$tokenData.roles
+
+
+# List all accessible sites to see what's available
+$sitesUrl = "https://graph.microsoft.com/v1.0/sites"
+try {
+    $sitesResponse = Invoke-RestMethod -Uri $sitesUrl -Headers $headers -Method Get
+    Write-Host "Accessible sites:"
+    $sitesResponse.value | Select-Object displayName, webUrl, id | Format-Table -AutoSize
+} catch {
+    Write-Host "Failed to list sites: $($_.Exception.Message)"
+}
+
+#Check Site.Selected Access
+#AAD AppOnly for Graph API
+$tenantId="{tenantId}"
+$aadClientId = "{clientId}"
+$aadClientSecret = "{clientSecret}"
+
+$scopes =  "https://graph.microsoft.com/.default"
+$loginURL = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+$body = @{grant_type="client_credentials";client_id=$aadClientId;client_secret=$aadClientSecret;scope=$scopes}
+
+$Token = Invoke-RestMethod -Method Post -Uri $loginURL -Body $body
+$Token.access_token  #expires after one hour
+$headerParams  = @{'Authorization'="$($Token.token_type) $($Token.access_token)"}
+$headerParams
+
+#Graph API call to get site
+Invoke-WebRequest -Method Get -Headers $headerParams -Uri "https://graph.microsoft.com/v1.0/sites/contoso.sharepoint.com:/sites/demo"
