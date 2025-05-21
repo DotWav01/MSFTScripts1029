@@ -1,9 +1,4 @@
-# Install required modules
-Install-Module Microsoft.Graph.Authentication
-Install-Module Microsoft.Graph.Sites
-Install-Module Microsoft.Graph.Files
-
-# Connect using app-only authentication
+# Get token manually
 $clientId = "your-app-client-id"
 $tenantId = "your-tenant-id"
 $clientSecret = "your-client-secret"
@@ -18,17 +13,16 @@ $tokenBody = @{
 $tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token" -Method POST -Body $tokenBody
 $accessToken = $tokenResponse.access_token
 
-Connect-MgGraph -AccessToken $accessToken
+# Make direct REST call to Graph API
+$headers = @{
+    'Authorization' = "Bearer $accessToken"
+    'Content-Type'  = 'application/json'
+}
 
-# Get site information
-$siteInfo = Get-MgSite -SiteId "yourtenant.sharepoint.com:/sites/yoursitename"
-$siteInfo | Format-List
+# Test site access
+$siteUrl = "yourtenant.sharepoint.com:/sites/yoursite"
+$encodedSiteUrl = [System.Web.HttpUtility]::UrlEncode($siteUrl)
+$response = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/sites/$encodedSiteUrl" -Headers $headers -Method Get
 
-# Get document libraries
-$drives = Get-MgSiteDrive -SiteId $siteInfo.Id
-$drives | Format-Table Name, Id
-
-# List items in a document library
-$driveId = $drives[0].Id
-$items = Get-MgDriveRootChild -DriveId $driveId
-$items | Format-Table Name, Size, WebUrl
+Write-Host "Successfully connected to site:" $response.displayName
+Write-Host "Site ID:" $response.id
