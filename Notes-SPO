@@ -99,3 +99,53 @@ try {
         Write-Host "Error Details: $($errorContent.error.message)"
     }
 }
+
+
+________________________________________________
+
+# Using your existing authentication setup
+$tenantId="{tenantId}"
+$aadClientId = "{clientId}"
+$aadClientSecret = "{clientSecret}"
+
+$scopes =  "https://graph.microsoft.com/.default"
+$loginURL = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+$body = @{grant_type="client_credentials";client_id=$aadClientId;client_secret=$aadClientSecret;scope=$scopes}
+
+$Token = Invoke-RestMethod -Method Post -Uri $loginURL -Body $body
+$headerParams  = @{'Authorization'="$($Token.token_type) $($Token.access_token)"}
+
+# Step 1: Get the Documents library (drive) to get the drive ID
+$driveUrl = "https://graph.microsoft.com/v1.0/sites/contoso.sharepoint.com:/sites/demo/drive"
+$drive = Invoke-RestMethod -Method Get -Headers $headerParams -Uri $driveUrl
+
+Write-Host "Documents Library ID: $($drive.id)"
+
+# Step 2: Create the file content
+$fileContent = "Hello, this is a test file created via Microsoft Graph API!"
+$fileBytes = [System.Text.Encoding]::UTF8.GetBytes($fileContent)
+
+# Step 3: Upload the file using the correct URL format with drive ID
+$uploadUrl = "https://graph.microsoft.com/v1.0/drives/$($drive.id)/root:/HelloTest.txt:/content"
+
+# Update headers for file upload
+$uploadHeaders = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-Type' = 'text/plain'
+}
+
+try {
+    $uploadResponse = Invoke-RestMethod -Method Put -Headers $uploadHeaders -Uri $uploadUrl -Body $fileBytes
+    Write-Host "File created successfully!"
+    Write-Host "File Name: $($uploadResponse.name)"
+    Write-Host "File ID: $($uploadResponse.id)"
+    Write-Host "File URL: $($uploadResponse.webUrl)"
+    Write-Host "Size: $($uploadResponse.size) bytes"
+} catch {
+    Write-Host "File creation failed!"
+    Write-Host "Error: $($_.Exception.Message)"
+    if ($_.ErrorDetails.Message) {
+        $errorContent = $_.ErrorDetails.Message | ConvertFrom-Json
+        Write-Host "Error Details: $($errorContent.error.message)"
+    }
+}
