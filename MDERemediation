@@ -1,0 +1,51 @@
+# Remediation Script
+# Enables Real-Time Monitoring and Behavior Monitoring if disabled
+# Exit code 0 = successful remediation
+# Exit code 1 = remediation failed
+
+try {
+    # Get current status
+    $defenderPreferences = Get-MpPreference
+    $realTimeEnabled = $defenderPreferences.DisableRealtimeMonitoring -eq $false
+    $behaviorMonitoringEnabled = $defenderPreferences.DisableBehaviorMonitoring -eq $false
+    
+    # Track if changes were made
+    $changesApplied = $false
+    
+    # Enable Real-Time Monitoring if disabled
+    if (-not $realTimeEnabled) {
+        Write-Output "Enabling Real-Time Monitoring..."
+        Set-MpPreference -DisableRealtimeMonitoring $false
+        $changesApplied = $true
+    }
+    
+    # Enable Behavior Monitoring if disabled
+    if (-not $behaviorMonitoringEnabled) {
+        Write-Output "Enabling Behavior Monitoring..."
+        Set-MpPreference -DisableBehaviorMonitoring $false
+        $changesApplied = $true
+    }
+    
+    # Verify settings were applied successfully
+    $newDefenderPreferences = Get-MpPreference
+    $newRealTimeEnabled = $newDefenderPreferences.DisableRealtimeMonitoring -eq $false
+    $newBehaviorMonitoringEnabled = $newDefenderPreferences.DisableBehaviorMonitoring -eq $false
+    
+    # Check if remediation was successful
+    if ($newRealTimeEnabled -and $newBehaviorMonitoringEnabled) {
+        if ($changesApplied) {
+            Write-Output "Remediation SUCCESSFUL - Both protections are now enabled"
+        } else {
+            Write-Output "No remediation needed - Both protections were already enabled"
+        }
+        exit 0  # Successful
+    }
+    else {
+        Write-Output "Remediation FAILED - Could not enable one or both protections"
+        exit 1  # Failed
+    }
+}
+catch {
+    Write-Error "Error occurred during remediation: $_"
+    exit 1  # Error occurred, remediation failed
+}
