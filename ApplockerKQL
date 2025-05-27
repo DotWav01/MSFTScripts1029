@@ -1,0 +1,34 @@
+// KQL Query to find AppLocker Event IDs 8003 and 8006
+// These events are located under Application and Services Logs\Microsoft\Windows\AppLocker
+
+DeviceEvents
+| where ActionType in ("AppLockerScriptBlocked", "AppLockerExecutableBlocked", "AppLockerPackagedAppBlocked", "AppLockerScriptAudited", "AppLockerExecutableAudited")
+or (AdditionalFields has "8003" or AdditionalFields has "8006")
+| extend EventId = case(
+    ActionType == "AppLockerScriptBlocked", "8003",
+    ActionType == "AppLockerExecutableBlocked", "8003", 
+    ActionType == "AppLockerPackagedAppBlocked", "8003",
+    ActionType == "AppLockerScriptAudited", "8006",
+    ActionType == "AppLockerExecutableAudited", "8006",
+    tostring(parse_json(AdditionalFields).EventId)
+)
+| where EventId in ("8003", "8006")
+| extend 
+    ProcessName = FileName,
+    ProcessPath = FolderPath,
+    ProcessCommandLine = ProcessCommandLine,
+    UserName = AccountName,
+    DeviceName = DeviceName,
+    EventDetails = AdditionalFields
+| project 
+    Timestamp,
+    DeviceName,
+    EventId,
+    ActionType,
+    ProcessName,
+    ProcessPath,
+    ProcessCommandLine,
+    UserName,
+    EventDetails,
+    ReportId
+| sort by Timestamp desc
