@@ -1,0 +1,158 @@
+# PowerShell script to get OneDrive URLs for users from an Entra ID group
+# Requires Microsoft Graph PowerShell module and appropriate permissions
+
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$GroupName,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$OutputPath = "OneDriveURLs_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+)
+
+# Check if Microsoft Graph module is installed
+if (!(Get-Module -ListAvailable -Name Microsoft.Graph)) {
+    Write-Error "Microsoft Graph PowerShell module is not installed. Please install it using: Install-Module Microsoft.Graph"
+    exit 1
+}
+
+# Import required modules
+Import-Module Microsoft.Graph.Users
+Import-Module Microsoft.Graph.Sites
+Import-Module Microsoft.Graph.Groups
+
+try {
+    # Connect to Microsoft Graph (this will prompt for authentication)
+    Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
+    Connect-MgGraph -Scopes "User.Read.All", "Sites.Read.All", "Group.Read.All", "GroupMember.Read.All"
+    
+    # Find the group by name
+    Write-Host "Searching for group: $GroupName" -ForegroundColor Yellow
+    $group = Get-MgGroup -Filter "displayName eq '$GroupName'" -ErrorAction Stop
+    
+    if (!$group) {
+        Write-Error "Group '$GroupName' not found"
+        exit 1
+    }
+    
+    if ($group.Count -gt 1) {
+        Write-Warning "Multiple groups found with name '$GroupName'. Using the first one."
+        $group = $group[0]
+    }
+    
+    Write-Host "Found group: $($group.DisplayName) (ID: $($group.Id))" -ForegroundColor Green
+    
+    # Get group members
+    Write-Host "Retrieving group members..." -ForegroundColor Yellow
+    $groupMembers = Get-MgGroupMember -GroupId $group.Id -All
+    
+    # Filter to only get user members (exclude other object types like groups, service principals)
+    $users = $groupMembers | Where-Object { $_.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.user' }
+    
+    if ($users.Count -eq 0) {
+        Write-Warning "No user members found in group '$GroupName'"
+        exit 0
+    }
+    
+    Write-Host "Found $($users.Count) user members in the group" -ForegroundColor Green
+    
+    # Initialize results array
+    $results = @()
+    $counter = 0
+    
+    foreach ($userMember in $users) {
+        $counter++
+        $userId = $userMember.Id
+        
+        Write-Host "Processing user $counter of $($users.Count): Getting user details..." -ForegroundColor Cyan
+        
+        try {
+            # Get full user information using the member ID
+            $mgUser = Get-MgUser -UserId $userId -ErrorAction Stop
+            $userPrincipalName = $mgUser.UserPrincipalName
+            
+            Write-Host "  User: $userPrincipalName" -ForegroundColor Cyan
+            
+            # Get user's default OneDrive
+            $oneDrive = Get-MgUserDefaultDrive -UserId $mgUser.Id -ErrorAction Stop
+            
+            if ($oneDrive) {
+                # Remove /Documents from the end of the WebUrl to get the base OneDrive URL
+                $baseUrl = $oneDrive.WebUrl
+                if ($baseUrl.EndsWith("/Documents")) {
+                    $oneDriveUrl = $baseUrl.Substring(0, $baseUrl.Length - 10)
+                } else {
+                    $oneDriveUrl = $baseUrl
+                }
+                $status = "Success"
+                $errorMsg = ""
+                Write-Host "  OneDrive URL found: $oneDriveUrl" -ForegroundColor Green
+            } else {
+                $oneDriveUrl = ""
+                $status = "No OneDrive"
+                $errorMsg = "OneDrive not found for user"
+                Write-Host "  OneDrive not found" -ForegroundColor Yellow
+            }
+        }
+        catch {
+            $userPrincipalName = "Unknown"
+            $oneDriveUrl = ""
+            $status = "Error"
+            $errorMsg = $_.Exception.Message
+            Write-Host "  Error: $errorMsg" -ForegroundColor Red
+        }
+        
+        # Add result to array
+        $results += [PSCustomObject]@{
+            UserPrincipalName = $userPrincipalName
+            DisplayName = if ($mgUser) { $mgUser.DisplayName } else { "N/A" }
+            OneDriveURL = $oneDriveUrl
+            Status = $status
+            ErrorMessage = $errorMsg
+        }
+        
+        # Add small delay to avoid throttling
+        Start-Sleep -Milliseconds 200
+    }
+    
+    # Export results to CSV
+    Write-Host ""
+    Write-Host "Exporting results to: $OutputPath" -ForegroundColor Yellow
+    $results | Export-Csv -Path $OutputPath -NoTypeInformation
+    
+    # Display summary
+    $successCount = ($results | Where-Object { $_.Status -eq "Success" }).Count
+    $errorCount = ($results | Where-Object { $_.Status -eq "Error" }).Count
+    $noOneDriveCount = ($results | Where-Object { $_.Status -eq "No OneDrive" }).Count
+    
+    Write-Host ""
+    Write-Host "=== SUMMARY ===" -ForegroundColor Magenta
+    Write-Host "Group: $($group.DisplayName)" -ForegroundColor White
+    Write-Host "Total users processed: $($users.Count)" -ForegroundColor White
+    Write-Host "Successful: $successCount" -ForegroundColor Green
+    Write-Host "No OneDrive: $noOneDriveCount" -ForegroundColor Yellow
+    Write-Host "Errors: $errorCount" -ForegroundColor Red
+    Write-Host "Results saved to: $OutputPath" -ForegroundColor White
+    
+    # Display users with OneDrive URLs
+    if ($successCount -gt 0) {
+        Write-Host ""
+        Write-Host "=== USERS WITH ONEDRIVE URLS ===" -ForegroundColor Magenta
+        $results | Where-Object { $_.Status -eq "Success" } | ForEach-Object {
+            Write-Host "$($_.UserPrincipalName): $($_.OneDriveURL)" -ForegroundColor Cyan
+        }
+    }
+}
+catch {
+    Write-Error "Script execution failed: $($_.Exception.Message)"
+}
+finally {
+    # Disconnect from Microsoft Graph
+    try {
+        Disconnect-MgGraph -ErrorAction SilentlyContinue
+        Write-Host ""
+        Write-Host "Disconnected from Microsoft Graph" -ForegroundColor Gray
+    }
+    catch {
+        # Ignore disconnect errors
+    }
+}
