@@ -40,7 +40,10 @@ param(
     [string]$Username,
     
     [Parameter(Mandatory=$false)]
-    [System.Security.SecureString]$Password
+    [System.Security.SecureString]$Password,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$InteractiveClientId
 )
 
 # Function to write log entries
@@ -93,7 +96,8 @@ function Connect-WithInteractiveAuth {
     param(
         [string]$Url,
         [string]$Username = $null,
-        [System.Security.SecureString]$Password = $null
+        [System.Security.SecureString]$Password = $null,
+        [string]$ClientId = $null
     )
     
     if ($Username -and $Password) {
@@ -101,9 +105,13 @@ function Connect-WithInteractiveAuth {
         $credential = New-Object System.Management.Automation.PSCredential($Username, $Password)
         Connect-PnPOnline -Url $Url -Credentials $credential -ErrorAction Stop
     } else {
-        Write-Log "Connecting with Interactive Authentication to: $Url"
+        if ([string]::IsNullOrEmpty($ClientId)) {
+            throw "InteractiveClientId is required for interactive browser authentication (since September 2024 PnP PowerShell security update)"
+        }
+        Write-Log "Connecting with Interactive Browser Authentication to: $Url"
+        Write-Log "Using Client ID: $ClientId"
         Write-Log "You will be prompted to sign in through your browser..." "WARN"
-        Connect-PnPOnline -Url $Url -Interactive -ErrorAction Stop
+        Connect-PnPOnline -Url $Url -ClientId $ClientId -Interactive -ErrorAction Stop
     }
 }
 
@@ -116,6 +124,9 @@ function Test-AuthenticationParameters {
         }
         if ($Password -and !$Username) {
             throw "Username is required when Password is specified for interactive authentication"
+        }
+        if (!$Username -and !$Password -and [string]::IsNullOrEmpty($InteractiveClientId)) {
+            throw "InteractiveClientId is required for browser-based interactive authentication (PnP PowerShell security requirement since September 2024)"
         }
     } else {
         Write-Log "Using Certificate Authentication mode"
@@ -150,7 +161,7 @@ function Connect-ToSite {
     param([string]$Url)
     
     if ($UseInteractiveAuth) {
-        Connect-WithInteractiveAuth -Url $Url -Username $Username -Password $Password
+        Connect-WithInteractiveAuth -Url $Url -Username $Username -Password $Password -ClientId $InteractiveClientId
     } else {
         Connect-WithCertificate -Url $Url -TenantId $TenantId -ClientId $ClientId -Thumbprint $Thumbprint
     }
@@ -385,9 +396,12 @@ Username for interactive authentication (optional - if not provided, browser sig
 .PARAMETER Password
 SecureString password for interactive authentication (optional - if not provided, browser sign-in will be used)
 
+.PARAMETER InteractiveClientId
+The Client ID of your Azure App Registration for interactive authentication (required for browser sign-in since September 2024)
+
 .EXAMPLE
 # Interactive authentication with browser sign-in (test mode)
-.\script.ps1 -SharePointAdminUrl "https://contoso-admin.sharepoint.com" -UseInteractiveAuth -TestMode -TestOneDriveUrl "https://contoso-my.sharepoint.com/personal/user_contoso_com" -WhatIf
+.\script.ps1 -SharePointAdminUrl "https://contoso-admin.sharepoint.com" -UseInteractiveAuth -InteractiveClientId "your-app-client-id" -TestMode -TestOneDriveUrl "https://contoso-my.sharepoint.com/personal/user_contoso_com" -WhatIf
 
 .EXAMPLE
 # Interactive authentication with username/password (normal mode)
@@ -400,7 +414,7 @@ $securePassword = ConvertTo-SecureString "YourPassword" -AsPlainText -Force
 
 .EXAMPLE
 # Test mode with interactive authentication (browser sign-in)
-.\script.ps1 -SharePointAdminUrl "https://contoso-admin.sharepoint.com" -UseInteractiveAuth -TestMode -WhatIf
+.\script.ps1 -SharePointAdminUrl "https://contoso-admin.sharepoint.com" -UseInteractiveAuth -InteractiveClientId "your-app-client-id" -TestMode -WhatIf
 
 .NOTES
 CSV file format:
