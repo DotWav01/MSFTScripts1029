@@ -1,0 +1,428 @@
+# Clean OneDrive Recycle Bin MP4 Transcript File Cleanup Script
+# Reads OneDrive URLs from CSV and deletes .mp4 files containing "transcript" from recycle bins
+# Supports both Certificate Authentication and Interactive User Authentication
+
+param(
+    [Parameter(Mandatory=$false)]
+    [string]$TenantId,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$ClientId,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$Thumbprint,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$CsvFilePath,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$SharePointAdminUrl,
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$WhatIf = $false,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$LogFilePath = "OneDriveCleanup_$(Get-Date -Format 'yyyyMMdd_HHmmss').log",
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$TestMode = $false,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$TestOneDriveUrl,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$TestUserName = "TestUser",
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$UseInteractiveAuth = $false,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$Username,
+    
+    [Parameter(Mandatory=$false)]
+    [System.Security.SecureString]$Password
+)
+
+# Function to write log entries
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] [$Level] $Message"
+    Write-Host $logEntry
+    Add-Content -Path $LogFilePath -Value $logEntry
+}
+
+# Function to validate CSV structure
+function Test-CsvStructure {
+    param([string]$CsvPath)
+    
+    if (!(Test-Path $CsvPath)) {
+        throw "CSV file not found: $CsvPath"
+    }
+    
+    $csvData = Import-Csv $CsvPath
+    $requiredColumns = @("OneDriveURL")
+    
+    foreach ($column in $requiredColumns) {
+        if ($column -notin $csvData[0].PSObject.Properties.Name) {
+            throw "CSV missing required column: $column. Required columns: $($requiredColumns -join ', ')"
+        }
+    }
+    
+    return $csvData
+}
+
+# Function to connect using certificate authentication
+function Connect-WithCertificate {
+    param(
+        [string]$Url,
+        [string]$TenantId,
+        [string]$ClientId,
+        [string]$Thumbprint
+    )
+    
+    Write-Log "Connecting with Certificate Authentication to: $Url"
+    Connect-PnPOnline -Url $Url -ClientId $ClientId -Thumbprint $Thumbprint -Tenant $TenantId -ErrorAction Stop
+}
+
+# Function to connect using interactive authentication
+function Connect-WithInteractiveAuth {
+    param(
+        [string]$Url,
+        [string]$Username = $null,
+        [System.Security.SecureString]$Password = $null
+    )
+    
+    if ($Username -and $Password) {
+        Write-Log "Connecting with Username/Password Authentication to: $Url"
+        $credential = New-Object System.Management.Automation.PSCredential($Username, $Password)
+        Connect-PnPOnline -Url $Url -Credentials $credential -ErrorAction Stop
+    } else {
+        Write-Log "Connecting with Interactive Authentication to: $Url"
+        Write-Log "You will be prompted to sign in through your browser..." "WARN"
+        Connect-PnPOnline -Url $Url -Interactive -ErrorAction Stop
+    }
+}
+
+# Function to validate authentication parameters
+function Test-AuthenticationParameters {
+    if ($UseInteractiveAuth) {
+        Write-Log "Using Interactive Authentication mode"
+        if ($Username -and !$Password) {
+            throw "Password is required when Username is specified for interactive authentication"
+        }
+        if ($Password -and !$Username) {
+            throw "Username is required when Password is specified for interactive authentication"
+        }
+    } else {
+        Write-Log "Using Certificate Authentication mode"
+        # Validate required certificate parameters
+        if ([string]::IsNullOrEmpty($TenantId)) {
+            throw "TenantId is required for certificate authentication"
+        }
+        if ([string]::IsNullOrEmpty($ClientId)) {
+            throw "ClientId is required for certificate authentication"
+        }
+        if ([string]::IsNullOrEmpty($Thumbprint)) {
+            throw "Thumbprint is required for certificate authentication"
+        }
+        
+        # Validate certificate is available
+        Write-Log "Validating certificate with thumbprint: $Thumbprint"
+        $cert = Get-ChildItem -Path "Cert:\CurrentUser\My\$Thumbprint" -ErrorAction SilentlyContinue
+        if (-not $cert) {
+            $cert = Get-ChildItem -Path "Cert:\LocalMachine\My\$Thumbprint" -ErrorAction SilentlyContinue
+        }
+        
+        if (-not $cert) {
+            throw "Certificate with thumbprint '$Thumbprint' not found in CurrentUser\My or LocalMachine\My certificate stores"
+        }
+        
+        Write-Log "Certificate found: $($cert.Subject)"
+    }
+}
+
+# Function to connect to SharePoint/OneDrive site
+function Connect-ToSite {
+    param([string]$Url)
+    
+    if ($UseInteractiveAuth) {
+        Connect-WithInteractiveAuth -Url $Url -Username $Username -Password $Password
+    } else {
+        Connect-WithCertificate -Url $Url -TenantId $TenantId -ClientId $ClientId -Thumbprint $Thumbprint
+    }
+}
+
+# Check if required modules are installed
+Write-Log "Checking required PowerShell modules..."
+$requiredModules = @("PnP.PowerShell")
+
+foreach ($module in $requiredModules) {
+    if (!(Get-Module -ListAvailable -Name $module)) {
+        Write-Log "Installing required module: $module" "WARN"
+        Install-Module -Name $module -Force -AllowClobber -Scope CurrentUser
+    }
+}
+
+try {
+    # Import required modules
+    Write-Log "Importing PowerShell modules..."
+    Import-Module PnP.PowerShell -Force
+    
+    # Validate authentication parameters
+    Test-AuthenticationParameters
+    
+    # Handle test mode vs normal mode
+    if ($TestMode) {
+        Write-Log "=== RUNNING IN TEST MODE ===" "WARN"
+        
+        if ([string]::IsNullOrEmpty($TestOneDriveUrl)) {
+            $TestOneDriveUrl = Read-Host "Enter the OneDrive URL to test (e.g., https://contoso-my.sharepoint.com/personal/user_contoso_com)"
+        }
+        
+        if ([string]::IsNullOrEmpty($TestOneDriveUrl) -or $TestOneDriveUrl -notlike "*-my.sharepoint.com/personal/*") {
+            throw "Invalid OneDrive URL provided. Must be in format: https://tenant-my.sharepoint.com/personal/user_domain_com"
+        }
+        
+        Write-Log "Test OneDrive URL: $TestOneDriveUrl"
+        
+        # Create a single test entry
+        $oneDriveEntries = @([PSCustomObject]@{
+            OneDriveURL = $TestOneDriveUrl
+        })
+        
+        Write-Log "Test mode initialized with 1 OneDrive URL"
+    } else {
+        # Normal mode - validate CSV file and read OneDrive URLs
+        if ([string]::IsNullOrEmpty($CsvFilePath)) {
+            throw "CsvFilePath is required when not in test mode"
+        }
+        
+        Write-Log "Validating CSV file structure..."
+        $oneDriveEntries = Test-CsvStructure -CsvPath $CsvFilePath
+        Write-Log "Found $($oneDriveEntries.Count) OneDrive URLs in CSV file"
+    }
+    
+    # Connect to SharePoint Online Admin (for initial authentication)
+    Write-Log "Connecting to SharePoint Online Admin..."
+    Connect-ToSite -Url $SharePointAdminUrl
+    Write-Log "Successfully connected to SharePoint Online Admin"
+    
+    # Initialize counters
+    $totalEntries = $oneDriveEntries.Count
+    $processedEntries = 0
+    $totalFilesFound = 0
+    $totalFilesDeleted = 0
+    $failedEntries = @()
+    
+    # Process each OneDrive URL
+    foreach ($entry in $oneDriveEntries) {
+        $processedEntries++
+        $userOneDriveUrl = $entry.OneDriveURL.Trim()
+        
+        # Extract a display name from the URL for logging
+        $displayName = "Unknown"
+        if ($userOneDriveUrl -match "/personal/([^/]+)") {
+            $displayName = $matches[1].Replace("_", "@").Replace("_", ".")
+        }
+        
+        Write-Log "Processing entry $processedEntries of $totalEntries`: $displayName"
+        Write-Log "  OneDrive URL: $userOneDriveUrl"
+        
+        try {
+            # Validate OneDrive URL format
+            if ([string]::IsNullOrEmpty($userOneDriveUrl) -or $userOneDriveUrl -notlike "*-my.sharepoint.com/personal/*") {
+                Write-Log "Invalid OneDrive URL format: '$userOneDriveUrl'" "WARN"
+                $failedEntries += [PSCustomObject]@{
+                    OneDriveURL = $userOneDriveUrl
+                    Error = "Invalid OneDrive URL format"
+                }
+                continue
+            }
+            
+            # Connect to the specific OneDrive site
+            Write-Log "Connecting to OneDrive site..."
+            Connect-ToSite -Url $userOneDriveUrl
+            
+            # Get recycle bin items
+            Write-Log "Retrieving recycle bin items..."
+            $recycleBinItems = Get-PnPRecycleBinItem -ErrorAction Stop
+            
+            # Filter for .mp4 files that contain "transcript" in the name
+            $mp4Files = $recycleBinItems | Where-Object { 
+                $_.LeafName -like "*.mp4" -and $_.LeafName -like "*transcript*"
+            }
+            $entryMp4Count = $mp4Files.Count
+            $totalFilesFound += $entryMp4Count
+            
+            if ($entryMp4Count -eq 0) {
+                Write-Log "No .mp4 transcript files found in recycle bin"
+                continue
+            }
+            
+            Write-Log "Found $entryMp4Count .mp4 transcript file(s) in recycle bin"
+            
+            # Log the files found
+            foreach ($file in $mp4Files) {
+                Write-Log "  - $($file.LeafName) (Deleted: $($file.DeletedDate), Size: $([math]::Round($file.Size/1MB, 2)) MB)"
+            }
+            
+            if ($WhatIf) {
+                Write-Log "[WHATIF] Would delete $entryMp4Count .mp4 transcript file(s)" "WARN"
+                continue
+            }
+            
+            # Delete the .mp4 transcript files
+            Write-Log "Deleting .mp4 transcript files from recycle bin..."
+            $entryDeletedCount = 0
+            
+            foreach ($file in $mp4Files) {
+                try {
+                    Clear-PnPRecycleBinItem -Identity $file.Id -Force -ErrorAction Stop
+                    Write-Log "  ✓ Deleted: $($file.LeafName)"
+                    $entryDeletedCount++
+                    $totalFilesDeleted++
+                }
+                catch {
+                    Write-Log "  ✗ Failed to delete: $($file.LeafName) - $($_.Exception.Message)" "ERROR"
+                }
+            }
+            
+            Write-Log "Completed processing: $entryDeletedCount of $entryMp4Count files deleted"
+            
+        }
+        catch {
+            $errorMessage = $_.Exception.Message
+            Write-Log "Error processing OneDrive $userOneDriveUrl`: $errorMessage" "ERROR"
+            $failedEntries += [PSCustomObject]@{
+                OneDriveURL = $userOneDriveUrl
+                Error = $errorMessage
+            }
+        }
+    }
+    
+    # Summary report
+    Write-Log "=== SUMMARY REPORT ===" "INFO"
+    Write-Log "Authentication method: $(if ($UseInteractiveAuth) { 'Interactive' } else { 'Certificate' })"
+    Write-Log "Total OneDrive URLs processed: $processedEntries"
+    Write-Log "Total .mp4 transcript files found: $totalFilesFound"
+    
+    if ($WhatIf) {
+        Write-Log "Total .mp4 transcript files that would be deleted: $totalFilesFound (WHATIF MODE)" "WARN"
+    } else {
+        Write-Log "Total .mp4 transcript files deleted: $totalFilesDeleted"
+    }
+    
+    if ($failedEntries.Count -gt 0) {
+        Write-Log "Failed entries: $($failedEntries.Count)" "WARN"
+        foreach ($failed in $failedEntries) {
+            Write-Log "  - $($failed.OneDriveURL): $($failed.Error)" "WARN"
+        }
+    }
+    
+    Write-Log "Log file saved to: $LogFilePath"
+    
+}
+catch {
+    Write-Log "Critical error: $($_.Exception.Message)" "ERROR"
+    throw
+}
+finally {
+    # Disconnect from SharePoint Online
+    try {
+        Disconnect-PnPOnline -ErrorAction SilentlyContinue
+        Write-Log "Disconnected from SharePoint Online"
+    }
+    catch {
+        # Ignore disconnect errors
+    }
+}
+
+<#
+.SYNOPSIS
+Deletes .mp4 transcript files from OneDrive recycle bins using URLs provided in CSV file.
+
+.DESCRIPTION
+This script reads OneDrive URLs from a CSV file and deletes .mp4 files that contain "transcript" in the filename from their recycle bins.
+It supports both Azure App Registration certificate authentication and interactive user authentication.
+
+.PARAMETER TenantId
+Your Azure AD Tenant ID (required for certificate authentication)
+
+.PARAMETER ClientId
+The Client ID of your Azure App Registration (required for certificate authentication)
+
+.PARAMETER Thumbprint
+The certificate thumbprint for your Azure App Registration (required for certificate authentication)
+
+.PARAMETER CsvFilePath
+Path to CSV file containing OneDrive URLs. Must have 'OneDriveURL' column.
+
+.PARAMETER SharePointAdminUrl
+Your SharePoint Admin Center URL (e.g., https://contoso-admin.sharepoint.com)
+
+.PARAMETER WhatIf
+Preview mode - shows what would be deleted without actually deleting
+
+.PARAMETER LogFilePath
+Path for log file (optional, defaults to timestamped file in current directory)
+
+.PARAMETER TestMode
+Enables test mode where you can manually specify a OneDrive URL
+
+.PARAMETER TestOneDriveUrl
+The OneDrive URL to test (only used in test mode)
+
+.PARAMETER UseInteractiveAuth
+Use interactive authentication instead of certificate authentication
+
+.PARAMETER Username
+Username for interactive authentication (optional - if not provided, browser sign-in will be used)
+
+.PARAMETER Password
+SecureString password for interactive authentication (optional - if not provided, browser sign-in will be used)
+
+.EXAMPLE
+# Interactive authentication with browser sign-in (test mode)
+.\script.ps1 -SharePointAdminUrl "https://contoso-admin.sharepoint.com" -UseInteractiveAuth -TestMode -TestOneDriveUrl "https://contoso-my.sharepoint.com/personal/user_contoso_com" -WhatIf
+
+.EXAMPLE
+# Interactive authentication with username/password (normal mode)
+$securePassword = ConvertTo-SecureString "YourPassword" -AsPlainText -Force
+.\script.ps1 -SharePointAdminUrl "https://contoso-admin.sharepoint.com" -UseInteractiveAuth -Username "user@contoso.com" -Password $securePassword -CsvFilePath "onedrive_urls.csv"
+
+.EXAMPLE
+# Certificate authentication (original method)
+.\script.ps1 -TenantId "your-tenant-id" -ClientId "your-client-id" -Thumbprint "your-thumbprint" -CsvFilePath "onedrive_urls.csv" -SharePointAdminUrl "https://contoso-admin.sharepoint.com"
+
+.EXAMPLE
+# Test mode with interactive authentication (browser sign-in)
+.\script.ps1 -SharePointAdminUrl "https://contoso-admin.sharepoint.com" -UseInteractiveAuth -TestMode -WhatIf
+
+.NOTES
+CSV file format:
+OneDriveURL
+https://contoso-my.sharepoint.com/personal/user1_company_com
+https://contoso-my.sharepoint.com/personal/user2_company_com
+
+Authentication Options:
+1. Certificate Authentication (for unattended execution):
+   - Requires TenantId, ClientId, and Thumbprint parameters
+   - App Registration Requirements: Sites.FullControl.All
+   - Certificate must be installed in certificate store and uploaded to Azure App Registration
+
+2. Interactive Authentication (for testing/manual execution):
+   - Use -UseInteractiveAuth switch
+   - Optional Username/Password parameters (if not provided, browser sign-in will be used)
+   - User must have appropriate permissions to access OneDrive sites
+
+Module Requirements:
+- PnP.PowerShell
+
+Permissions Required:
+- SharePoint Administrator role or equivalent permissions to access OneDrive sites
+- For certificate auth: App registration with Sites.FullControl.All permissions
+#>
