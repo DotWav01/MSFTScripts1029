@@ -1,0 +1,707 @@
+# Surface Hub 2S Migration Requirements Checker
+# This script checks the prerequisites for migrating Surface Hub 2S to Windows 11
+
+Write-Host "=== Surface Hub 2S Migration Requirements Checker ===" -ForegroundColor Cyan
+Write-Host "Starting system validation..." -ForegroundColor Green
+Write-Host ""
+
+# Variables to track results for summary
+$Script:Results = @{
+    InternetAccess = @{Status = "UNKNOWN"; Details = ""}
+    OSBuild = @{Status = "UNKNOWN"; Details = ""}
+    LatestUpdate = @{Status = "UNKNOWN"; Details = ""}
+    PendingUpdates = @{Status = "UNKNOWN"; Details = ""}
+    SurfaceUEFI = @{Status = "UNKNOWN"; Details = ""}
+    DiskSpace = @{Status = "UNKNOWN"; Details = ""}
+    NetworkURLs = @{Status = "UNKNOWN"; Details = ""}
+}
+
+# Function to test connection with timeout
+function Test-ConnectionWithTimeout {
+    param(
+        [string]$ComputerName,
+        [int]$Port,
+        [int]$TimeoutSeconds = 15
+    )
+    
+    try {
+        # Use a job to control timeout
+        $job = Start-Job -ScriptBlock {
+            param($Computer, $Port)
+            Test-NetConnection -ComputerName $Computer -Port $Port -InformationLevel Quiet -WarningAction SilentlyContinue
+        } -ArgumentList $ComputerName, $Port
+        
+        # Wait for job to complete or timeout
+        $completed = Wait-Job -Job $job -Timeout $TimeoutSeconds
+        
+        if ($completed) {
+            $result = Receive-Job -Job $job
+            Remove-Job -Job $job -Force
+            return $result
+        } else {
+            # Job timed out
+            Remove-Job -Job $job -Force
+            return $false
+        }
+    } catch {
+        return $false
+    }
+}
+
+# Function to write results with color coding and track for summary
+function Write-Result {
+    param(
+        [string]$Test,
+        [string]$Status,
+        [string]$Details = "",
+        [string]$SummaryCategory = ""
+    )
+    
+    $color = switch ($Status) {
+        "PASS" { "Green" }
+        "FAIL" { "Red" }
+        "WARNING" { "Yellow" }
+        "INFO" { "White" }
+        default { "White" }
+    }
+    
+    Write-Host "[$Status] $Test" -ForegroundColor $color
+    if ($Details) {
+        Write-Host "    $Details" -ForegroundColor Gray
+    }
+    
+    # Track results for summary
+    if ($SummaryCategory -and $Script:Results.ContainsKey($SummaryCategory)) {
+        $Script:Results[$SummaryCategory].Status = $Status
+        $Script:Results[$SummaryCategory].Details = $Details
+    }
+}
+
+# 1. Check Internet Connectivity
+Write-Host "1. Checking Internet Connectivity..." -ForegroundColor Yellow
+try {
+    # First try the original method (faster when it works)
+    $ping = Test-NetConnection -ComputerName "8.8.8.8" -Port 53 -InformationLevel Quiet -WarningAction SilentlyContinue
+    if ($ping) {
+        Write-Result "Internet Connectivity" "PASS" "Connected to internet" "InternetAccess"
+    } else {
+        # If that fails, try with timeout control as backup
+        Write-Host "   Retrying with timeout control..." -ForegroundColor Gray
+        $pingWithTimeout = Test-ConnectionWithTimeout -ComputerName "8.8.8.8" -Port 53 -TimeoutSeconds 10
+        if ($pingWithTimeout) {
+            Write-Result "Internet Connectivity" "PASS" "Connected to internet (retry successful)" "InternetAccess"
+        } else {
+            Write-Result "Internet Connectivity" "FAIL" "No internet connection detected" "InternetAccess"
+        }
+    }
+} catch {
+    Write-Result "Internet Connectivity" "FAIL" "Error testing connection: $($_.Exception.Message)" "InternetAccess"
+}
+
+# 2. Check Windows Version and Build
+Write-Host "`n2. Checking Windows Version and Build..." -ForegroundColor Yellow
+try {
+    # Get detailed build information using registry
+    $currentBuild = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+    $buildNumber = [int]$currentBuild.CurrentBuild
+    $ubr = $currentBuild.UBR  # Update Build Revision
+    $fullBuild = "$buildNumber.$ubr"
+    $displayVersion = $currentBuild.DisplayVersion
+    $productName = $currentBuild.ProductName
+    
+    Write-Result "Current OS Version" "INFO" "$productName - Version $displayVersion"
+    Write-Result "Current OS Build" "INFO" "Build $fullBuild"
+    
+    # Check if build meets requirement (19045.4123 or later)
+    try {
+        $currentVersion = [Version]$fullBuild
+        $requiredVersion = [Version]"19045.4123"
+        
+        if ($currentVersion -ge $requiredVersion) {
+            Write-Result "OS Build Requirement" "PASS" "Build $fullBuild meets requirement (≥19045.4123)" "OSBuild"
+        } else {
+            Write-Result "OS Build Requirement" "FAIL" "Build $fullBuild is below required 19045.4123" "OSBuild"
+            Write-Host "    Current: $fullBuild | Required: 19045.4123 or later" -ForegroundColor Gray
+        }
+    } catch {
+        # Fallback for version comparison issues
+        if ($buildNumber -eq 19045 -and $ubr -ge 4123) {
+            Write-Result "OS Build Requirement" "PASS" "Build $fullBuild meets requirement" "OSBuild"
+        } elseif ($buildNumber -eq 19045 -and $ubr -lt 4123) {
+            Write-Result "OS Build Requirement" "FAIL" "Build $fullBuild is below required 19045.4123" "OSBuild"
+        } elseif ($buildNumber -gt 19045) {
+            Write-Result "OS Build Requirement" "PASS" "Build $fullBuild exceeds minimum requirement" "OSBuild"
+        } else {
+            Write-Result "OS Build Requirement" "FAIL" "Build $fullBuild is below minimum requirement" "OSBuild"
+        }
+    }
+    
+} catch {
+    Write-Result "Windows Version Check" "FAIL" "Error retrieving OS information: $($_.Exception.Message)"
+}
+
+# 3. Check Windows Update Status and Available Updates
+Write-Host "`n3. Checking Windows Update Status and Available Updates..." -ForegroundColor Yellow
+try {
+    # Check if Windows Update service is running
+    $wuService = Get-Service -Name "wuauserv" -ErrorAction SilentlyContinue
+    if ($wuService) {
+        Write-Result "Windows Update Service" "INFO" "Status: $($wuService.Status)"
+        
+        if ($wuService.Status -ne "Running") {
+            Write-Result "Windows Update Service Status" "WARNING" "Service not running - may need to start manually"
+        }
+    }
+    
+    # Check last update installation time
+    $lastUpdate = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
+    if ($lastUpdate -and $lastUpdate.InstalledOn) {
+        $daysSinceUpdate = (Get-Date) - $lastUpdate.InstalledOn
+        $updateDetails = "$($lastUpdate.HotFixID) on $($lastUpdate.InstalledOn.ToString('MM/dd/yyyy'))"
+        Write-Result "Last Update Installed" "INFO" "$updateDetails ($([math]::Round($daysSinceUpdate.TotalDays, 0)) days ago)"
+        
+        # Store for summary
+        $Script:Results.LatestUpdate.Status = "INFO"
+        $Script:Results.LatestUpdate.Details = $updateDetails
+        
+        if ($daysSinceUpdate.TotalDays -gt 30) {
+            Write-Result "Update Recency" "WARNING" "Last update was over 30 days ago - check for new updates"
+        } else {
+            Write-Result "Update Recency" "PASS" "Recent updates detected"
+        }
+    }
+    
+    # Try to check for available updates using Windows Update API
+    Write-Host "`n   Checking for Available Updates..." -ForegroundColor Gray
+    try {
+        # Create Windows Update Session
+        $updateSession = New-Object -ComObject Microsoft.Update.Session
+        $updateSearcher = $updateSession.CreateUpdateSearcher()
+        
+        Write-Host "    Searching for updates (this may take a moment)..." -ForegroundColor Gray
+        $searchResult = $updateSearcher.Search("IsInstalled=0 and Type='Software'")
+        
+        if ($searchResult.Updates.Count -eq 0) {
+            Write-Result "Available Updates" "PASS" "No pending updates found" "PendingUpdates"
+        } else {
+            Write-Result "Available Updates" "FAIL" "$($searchResult.Updates.Count) updates available for installation" "PendingUpdates"
+            
+            # Show first few pending updates
+            $updateCount = [math]::Min(5, $searchResult.Updates.Count)
+            for ($i = 0; $i -lt $updateCount; $i++) {
+                $update = $searchResult.Updates.Item($i)
+                Write-Host "    - $($update.Title)" -ForegroundColor Gray
+            }
+            
+            if ($searchResult.Updates.Count -gt 5) {
+                Write-Host "    ... and $($searchResult.Updates.Count - 5) more updates" -ForegroundColor Gray
+            }
+        }
+        
+        # Check specifically for hardware/driver updates
+        $hardwareUpdates = $searchResult.Updates | Where-Object { 
+            $_.Title -like "*hardware*" -or 
+            $_.Title -like "*driver*" -or 
+            $_.Title -like "*firmware*" -or
+            $_.Title -like "*Surface*"
+        }
+        
+        if ($hardwareUpdates.Count -gt 0) {
+            Write-Result "Hardware/Driver Updates" "WARNING" "$($hardwareUpdates.Count) hardware/driver updates available"
+            foreach ($hwUpdate in $hardwareUpdates) {
+                Write-Host "    - $($hwUpdate.Title)" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Result "Hardware/Driver Updates" "INFO" "No pending hardware/driver updates found"
+        }
+        
+    } catch [System.UnauthorizedAccessException] {
+        Write-Result "Update Check" "WARNING" "Access denied - run as Administrator to check for updates" "PendingUpdates"
+    } catch [System.Runtime.InteropServices.COMException] {
+        Write-Result "Update Check" "WARNING" "Cannot access Windows Update - check Windows Update service" "PendingUpdates"
+    } catch {
+        Write-Result "Update Check" "WARNING" "Error checking for updates: $($_.Exception.Message)" "PendingUpdates"
+        Write-Host "    Manual check required: Settings > Update & Security > Windows Update" -ForegroundColor Gray
+    }
+    
+} catch {
+    Write-Result "Windows Update Check" "FAIL" "Error checking update status: $($_.Exception.Message)"
+}
+
+# 4. Check Surface UEFI/Firmware Version
+Write-Host "`n4. Checking Surface UEFI/Firmware Version..." -ForegroundColor Yellow
+
+# Function to get Surface Firmware information
+Function Get-SurfaceFirmware {
+    param([string]$ComputerName = $env:COMPUTERNAME)
+    
+    try {
+        $SurfaceFirmwareDriversRaw = Get-WmiObject Win32_PnPSignedDriver -ComputerName $ComputerName | 
+            Where-Object {$_.deviceclass -eq "FIRMWARE"} | 
+            Select-Object DeviceName, DriverVersion
+        
+        $SurfaceFirmware = New-Object -TypeName PSObject
+        foreach ($driver in $SurfaceFirmwareDriversRaw) { 
+            $SurfaceFirmware | Add-Member -MemberType NoteProperty -Name "$($driver.DeviceName)" -Value "$($driver.DriverVersion)" 
+        }
+        return $SurfaceFirmware
+    } catch {
+        return $null
+    }
+}
+
+try {
+    # Get Surface firmware information
+    $surfaceFirmware = Get-SurfaceFirmware
+    
+    if ($surfaceFirmware) {
+        Write-Result "Surface Firmware Drivers Found" "INFO" "Retrieved firmware information"
+        
+        # Display all firmware components
+        $surfaceFirmware.PSObject.Properties | ForEach-Object {
+            Write-Host "    $($_.Name): $($_.Value)" -ForegroundColor Gray
+            
+            # Check if this might be the UEFI version we're looking for
+            if ($_.Name -like "*UEFI*" -or $_.Name -like "*System*" -or $_.Name -like "*BIOS*") {
+                $firmwareVersion = $_.Value
+                
+                # Try to parse and compare with required version 699.845.768.0
+                if ($firmwareVersion -match "(\d+)\.(\d+)\.(\d+)\.(\d+)") {
+                    try {
+                        $currentVersion = [Version]"$($matches[1]).$($matches[2]).$($matches[3]).$($matches[4])"
+                        $requiredVersion = [Version]"699.845.768.0"
+                        
+                        if ($currentVersion -ge $requiredVersion) {
+                            Write-Result "UEFI Version Requirement ($($_.Name))" "PASS" "Version $currentVersion meets requirement (≥699.845.768.0)"
+                        } else {
+                            Write-Result "UEFI Version Requirement ($($_.Name))" "FAIL" "Version $currentVersion below required 699.845.768.0"
+                        }
+                    } catch {
+                        Write-Result "UEFI Version Analysis" "WARNING" "Could not compare version $firmwareVersion"
+                    }
+                }
+            }
+        }
+        
+        # If no clear UEFI version found, provide guidance
+        $uefiFound = $surfaceFirmware.PSObject.Properties | Where-Object { $_.Name -like "*UEFI*" -or $_.Name -like "*System*" -or $_.Name -like "*BIOS*" }
+        if (-not $uefiFound) {
+            Write-Result "UEFI Version Requirement" "WARNING" "No clear UEFI version identified - manual verification required"
+        }
+    } else {
+        # Fallback to standard BIOS check
+        $bios = Get-WmiObject -Class Win32_BIOS
+        $uefiVersion = $bios.SMBIOSBIOSVersion
+        
+        Write-Result "Standard BIOS Version" "INFO" "$uefiVersion"
+        Write-Result "Surface Firmware Check" "WARNING" "Could not retrieve Surface-specific firmware - using standard BIOS info"
+    }
+} catch {
+    Write-Result "Surface Firmware Check" "FAIL" "Error retrieving firmware information: $($_.Exception.Message)"
+}
+
+# 5. Check Available Disk Space (for 30GB download)
+Write-Host "`n5. Checking Available Disk Space..." -ForegroundColor Yellow
+try {
+    $systemDrive = Get-WmiObject -Class Win32_LogicalDisk | Where-Object { $_.DeviceID -eq $env:SystemDrive }
+    $freeSpaceGB = [math]::Round($systemDrive.FreeSpace / 1GB, 2)
+    
+    Write-Result "Available Disk Space" "INFO" "$freeSpaceGB GB free on $($systemDrive.DeviceID)"
+    
+    if ($freeSpaceGB -ge 30) {
+        Write-Result "Disk Space Requirement" "PASS" "Sufficient space for 30GB download" "DiskSpace"
+    } else {
+        Write-Result "Disk Space Requirement" "FAIL" "Insufficient space - need at least 30GB free" "DiskSpace"
+    }
+} catch {
+    Write-Result "Disk Space Check" "FAIL" "Error checking disk space: $($_.Exception.Message)"
+}
+
+# 6. Check Network Connectivity to Required Activation URLs
+Write-Host "`n6. Testing Network Connectivity to Required Activation URLs..." -ForegroundColor Yellow
+
+# Test specific activation URLs
+$activationUrls = @(
+    @{Url="activation.sls.microsoft.com"; Port=443; Description="SLS Activation Service"},
+    @{Url="validation.sls.microsoft.com"; Port=443; Description="SLS Validation Service"},
+    @{Url="activation-v2.sls.microsoft.com"; Port=443; Description="SLS Activation Service v2"},
+    @{Url="validation-v2.sls.microsoft.com"; Port=443; Description="SLS Validation Service v2"},
+    @{Url="crl.microsoft.com"; Port=80; Description="Certificate Revocation List"}
+)
+
+# Test host connectivity first
+$urlTestResults = @()
+foreach ($urlTest in $activationUrls) {
+    try {
+        $connection = Test-NetConnection -ComputerName $urlTest.Url -Port $urlTest.Port -InformationLevel Quiet -WarningAction SilentlyContinue
+        if ($connection) {
+            Write-Result "Host connectivity to $($urlTest.Url)" "PASS" "$($urlTest.Description) - Port $($urlTest.Port)"
+            $urlTestResults += "PASS"
+        } else {
+            Write-Result "Host connectivity to $($urlTest.Url)" "FAIL" "$($urlTest.Description) - Port $($urlTest.Port) blocked"
+            $urlTestResults += "FAIL"
+        }
+    } catch {
+        Write-Result "Host connectivity to $($urlTest.Url)" "FAIL" "Error testing connection: $($_.Exception.Message)"
+        $urlTestResults += "FAIL"
+    }
+}
+
+# Determine overall network URL status
+$failedUrls = ($urlTestResults | Where-Object { $_ -eq "FAIL" }).Count
+if ($failedUrls -eq 0) {
+    $Script:Results.NetworkURLs.Status = "PASS"
+    $Script:Results.NetworkURLs.Details = "All activation URLs accessible"
+} else {
+    $Script:Results.NetworkURLs.Status = "FAIL"
+    $Script:Results.NetworkURLs.Details = "$failedUrls of $($activationUrls.Count) URLs failed"
+}
+
+# Additional connectivity tests for Microsoft Product services
+Write-Host "`n   Testing Microsoft Product Services..." -ForegroundColor Gray
+$microsoftProductUrls = @(
+    @{Url="displaycatalog.mp.microsoft.com"; Port=443; Description="Display Catalog Service"},
+    @{Url="licensing.mp.microsoft.com"; Port=443; Description="Licensing Service"},
+    @{Url="purchase.mp.microsoft.com"; Port=443; Description="Purchase Service"},
+    @{Url="displaycatalog.md.mp.microsoft.com"; Port=443; Description="Display Catalog MD Service"},
+    @{Url="licensing.md.mp.microsoft.com"; Port=443; Description="Licensing MD Service"},
+    @{Url="purchase.md.mp.microsoft.com"; Port=443; Description="Purchase MD Service"},
+    @{Url="www.microsoft.com"; Port=443; Description="Microsoft Main Site"}
+)
+
+$mpTestResults = @()
+foreach ($urlTest in $microsoftProductUrls) {
+    Write-Host "   Testing $($urlTest.Url)..." -ForegroundColor Gray -NoNewline
+    
+    $connection = Test-ConnectionWithTimeout -ComputerName $urlTest.Url -Port $urlTest.Port -TimeoutSeconds 15
+    
+    if ($connection) {
+        Write-Host " ✓" -ForegroundColor Green
+        Write-Result "Connectivity to $($urlTest.Url)" "PASS" "$($urlTest.Description) - Port $($urlTest.Port)"
+        $mpTestResults += "PASS"
+    } else {
+        Write-Host " ✗" -ForegroundColor Red
+        Write-Result "Connectivity to $($urlTest.Url)" "WARNING" "$($urlTest.Description) - Port $($urlTest.Port) blocked or timeout"
+        $mpTestResults += "FAIL"
+    }
+}
+
+# Update network URLs status to include MP services (but keep activation URLs as priority)
+$mpFailedUrls = ($mpTestResults | Where-Object { $_ -eq "FAIL" }).Count
+if ($mpFailedUrls -gt 0) {
+    $Script:Results.NetworkURLs.Details += " | $mpFailedUrls of $($microsoftProductUrls.Count) MP services failed"
+}
+
+# 7. Check for Specific System Hardware Components (February 8, 2024 Update)
+Write-Host "`n7. Checking for System Hardware Components (Feb 8, 2024 Update)..." -ForegroundColor Yellow
+
+# Define required components from February 8, 2024 update
+$requiredComponents = @{
+    "Surface UEFI" = @{
+        MinVersion = [Version]"699.845.768.0"
+        Description = "Surface UEFI update"
+    }
+    "Surface ME Firmware" = @{
+        MinVersion = [Version]"11.8.94.4494"
+        Description = "Surface Management Engine Firmware"
+    }
+    "Intel Management Engine Interface" = @{
+        MinVersion = [Version]"2251.4.2.0"
+        Description = "Intel Management Engine Interface driver"
+    }
+    "Intel Bluetooth" = @{
+        MinVersion = [Version]"23.30.0.3"
+        Description = "Intel Bluetooth driver"
+    }
+    "Intel Wi-Fi" = @{
+        MinVersion = [Version]"23.30.0.6"
+        Description = "Intel Wi-Fi driver"
+    }
+}
+
+# Check Surface firmware components (from earlier function)
+if ($surfaceFirmware) {
+    Write-Result "Surface Firmware Analysis" "INFO" "Analyzing Surface-specific components"
+    
+    # Check specifically for Surface UEFI (most critical component)
+    $uefiComponent = $surfaceFirmware.PSObject.Properties | Where-Object { $_.Name -eq "Surface UEFI" }
+    if ($uefiComponent) {
+        $currentUefiVersion = $uefiComponent.Value
+        
+        try {
+            if ($currentUefiVersion -match "(\d+)\.(\d+)\.(\d+)\.(\d+)") {
+                $installedVersion = [Version]"$($matches[1]).$($matches[2]).$($matches[3]).$($matches[4])"
+                $requiredVersion = $requiredComponents["Surface UEFI"].MinVersion
+                
+                if ($installedVersion -ge $requiredVersion) {
+                    Write-Result "Surface UEFI" "PASS" "v$installedVersion (≥v$requiredVersion required)" "SurfaceUEFI"
+                } else {
+                    Write-Result "Surface UEFI" "FAIL" "v$installedVersion (v$requiredVersion required)" "SurfaceUEFI"
+                }
+            } else {
+                Write-Result "Surface UEFI" "WARNING" "Found v$currentUefiVersion - cannot parse for comparison" "SurfaceUEFI"
+            }
+        } catch {
+            Write-Result "Surface UEFI" "WARNING" "Found v$currentUefiVersion but cannot compare version" "SurfaceUEFI"
+        }
+    } else {
+        Write-Result "Surface UEFI" "FAIL" "Surface UEFI not found in firmware list" "SurfaceUEFI"
+    }
+    
+    # Check for Surface ME Firmware
+    $meComponent = $surfaceFirmware.PSObject.Properties | Where-Object { $_.Name -eq "Surface ME" }
+    if ($meComponent) {
+        $currentMeVersion = $meComponent.Value
+        
+        try {
+            if ($currentMeVersion -match "(\d+)\.(\d+)\.(\d+)\.(\d+)") {
+                $installedVersion = [Version]"$($matches[1]).$($matches[2]).$($matches[3]).$($matches[4])"
+                $requiredVersion = $requiredComponents["Surface ME Firmware"].MinVersion
+                
+                if ($installedVersion -ge $requiredVersion) {
+                    Write-Result "Surface ME Firmware" "PASS" "v$installedVersion (≥v$requiredVersion required)"
+                } else {
+                    Write-Result "Surface ME Firmware" "FAIL" "v$installedVersion (v$requiredVersion required)"
+                }
+            } else {
+                Write-Result "Surface ME Firmware" "WARNING" "Found v$currentMeVersion - cannot parse for comparison"
+            }
+        } catch {
+            Write-Result "Surface ME Firmware" "WARNING" "Found v$currentMeVersion but cannot compare version"
+        }
+    } else {
+        Write-Result "Surface ME Firmware" "WARNING" "Surface ME not found in firmware list"
+    }
+}
+
+# Check for Intel drivers in system
+Write-Host "`n   Checking Intel Drivers in System..." -ForegroundColor Gray
+try {
+    # Check for Intel Management Engine Interface driver
+    $meDriver = Get-WmiObject Win32_PnPSignedDriver | Where-Object { 
+        $_.DeviceName -like "*Management Engine*" -or 
+        $_.DeviceName -like "*Intel*Management*" 
+    } | Select-Object DeviceName, DriverVersion -First 1
+    
+    if ($meDriver) {
+        Write-Result "Intel ME Interface Driver" "INFO" "$($meDriver.DeviceName) - v$($meDriver.DriverVersion)"
+        
+        # Try to compare version
+        if ($meDriver.DriverVersion -match "(\d+)\.(\d+)\.(\d+)\.(\d+)") {
+            try {
+                $currentVersion = [Version]"$($matches[1]).$($matches[2]).$($matches[3]).$($matches[4])"
+                $requiredVersion = $requiredComponents["Intel Management Engine Interface"].MinVersion
+                
+                if ($currentVersion -ge $requiredVersion) {
+                    Write-Result "Intel ME Interface Version Check" "PASS" "v$currentVersion meets requirement"
+                } else {
+                    Write-Result "Intel ME Interface Version Check" "FAIL" "v$currentVersion below required v$requiredVersion"
+                }
+            } catch {
+                Write-Result "Intel ME Interface Version Check" "WARNING" "Cannot compare version"
+            }
+        }
+    } else {
+        Write-Result "Intel ME Interface Driver" "WARNING" "Not found in driver list"
+    }
+    
+    # Check for Intel Bluetooth driver
+    $bluetoothDriver = Get-WmiObject Win32_PnPSignedDriver | Where-Object { 
+        $_.DeviceName -like "*Intel*Bluetooth*" -or 
+        $_.DeviceName -like "*Bluetooth*Intel*"
+    } | Select-Object DeviceName, DriverVersion -First 1
+    
+    if ($bluetoothDriver) {
+        Write-Result "Intel Bluetooth Driver" "INFO" "$($bluetoothDriver.DeviceName) - v$($bluetoothDriver.DriverVersion)"
+    } else {
+        Write-Result "Intel Bluetooth Driver" "WARNING" "Not found - check Device Manager manually"
+    }
+    
+    # Check for Intel Wi-Fi driver
+    $wifiDriver = Get-WmiObject Win32_PnPSignedDriver | Where-Object { 
+        $_.DeviceName -like "*Intel*Wi*Fi*" -or 
+        $_.DeviceName -like "*Intel*Wireless*" -or
+        $_.DeviceName -like "*Intel*WiFi*"
+    } | Select-Object DeviceName, DriverVersion -First 1
+    
+    if ($wifiDriver) {
+        Write-Result "Intel Wi-Fi Driver" "INFO" "$($wifiDriver.DeviceName) - v$($wifiDriver.DriverVersion)"
+    } else {
+        Write-Result "Intel Wi-Fi Driver" "WARNING" "Not found - check Device Manager manually"
+    }
+    
+} catch {
+    Write-Result "Intel Driver Check" "FAIL" "Error checking drivers: $($_.Exception.Message)"
+}
+
+# Check for the February 8, 2024 system update specifically
+Write-Host "`n   Checking for February 8, 2024 System Update..." -ForegroundColor Gray
+try {
+    $feb8Update = Get-HotFix | Where-Object { 
+        $_.InstalledOn -ge (Get-Date "2024-02-01") -and 
+        $_.InstalledOn -le (Get-Date "2024-02-29") -and
+        ($_.Description -like "*System*" -or $_.Description -like "*Hardware*")
+    }
+    
+    if ($feb8Update) {
+        Write-Result "February 2024 System Update" "PASS" "Found system update from February 2024"
+        foreach ($update in $feb8Update) {
+            Write-Host "    - $($update.HotFixID): $($update.Description) ($($update.InstalledOn))" -ForegroundColor Gray
+        }
+    } else {
+        Write-Result "February 2024 System Update" "FAIL" "No system updates found from February 2024"
+        Write-Host "    Required: Microsoft Corporation - System Hardware Update - 2/8/2024" -ForegroundColor Gray
+    }
+} catch {
+    Write-Result "February 2024 Update Check" "FAIL" "Error checking for specific update: $($_.Exception.Message)"
+}
+
+# 8. Network Speed Test (Basic)
+Write-Host "`n8. Basic Network Performance Check..." -ForegroundColor Yellow
+try {
+    # Simple download speed test using a small file from Microsoft
+    $testUrl = "http://download.microsoft.com/download/2/0/E/20E90413-712F-438C-988E-FDAA79A8AC3D/dotnetfx35.exe"
+    $startTime = Get-Date
+    
+    # Test with a HEAD request to avoid downloading
+    try {
+        $request = [System.Net.WebRequest]::Create("https://www.microsoft.com")
+        $request.Method = "HEAD"
+        $request.Timeout = 10000
+        $response = $request.GetResponse()
+        $endTime = Get-Date
+        $responseTime = ($endTime - $startTime).TotalMilliseconds
+        
+        if ($responseTime -lt 5000) {
+            Write-Result "Network Performance" "PASS" "Response time: $([math]::Round($responseTime, 0))ms"
+        } else {
+            Write-Result "Network Performance" "WARNING" "Slow response time: $([math]::Round($responseTime, 0))ms"
+        }
+        $response.Close()
+    } catch {
+        Write-Result "Network Performance" "WARNING" "Could not test network performance"
+    }
+} catch {
+    Write-Result "Network Performance Check" "FAIL" "Error testing network: $($_.Exception.Message)"
+}
+
+# Summary
+# Summary
+Write-Host "`n=== MIGRATION READINESS SUMMARY ===" -ForegroundColor Cyan
+
+# Helper function to display summary status
+function Write-SummaryStatus {
+    param([string]$Item, [string]$Status, [string]$Details)
+    
+    $statusColor = switch ($Status) {
+        "PASS" { "Green" }
+        "FAIL" { "Red" }
+        "WARNING" { "Yellow" }
+        default { "White" }
+    }
+    
+    $statusSymbol = switch ($Status) {
+        "PASS" { "✓" }
+        "FAIL" { "✗" }
+        "WARNING" { "⚠" }
+        default { "?" }
+    }
+    
+    Write-Host "$statusSymbol " -ForegroundColor $statusColor -NoNewline
+    Write-Host "$Item`: " -ForegroundColor White -NoNewline
+    Write-Host "$Details" -ForegroundColor Gray
+}
+
+# Display summary results
+Write-SummaryStatus "Internet Access" $Script:Results.InternetAccess.Status $Script:Results.InternetAccess.Details
+Write-SummaryStatus "OS Build Check" $Script:Results.OSBuild.Status $Script:Results.OSBuild.Details
+Write-SummaryStatus "Latest Update" $Script:Results.LatestUpdate.Status $Script:Results.LatestUpdate.Details
+Write-SummaryStatus "Pending Updates" $Script:Results.PendingUpdates.Status $Script:Results.PendingUpdates.Details
+Write-SummaryStatus "Surface UEFI" $Script:Results.SurfaceUEFI.Status $Script:Results.SurfaceUEFI.Details
+Write-SummaryStatus "Disk Space" $Script:Results.DiskSpace.Status $Script:Results.DiskSpace.Details
+Write-SummaryStatus "Network URLs" $Script:Results.NetworkURLs.Status $Script:Results.NetworkURLs.Details
+
+# Overall readiness assessment
+$criticalFailures = @($Script:Results.Values | Where-Object { $_.Status -eq "FAIL" }).Count
+$warnings = @($Script:Results.Values | Where-Object { $_.Status -eq "WARNING" }).Count
+
+Write-Host "`n=== OVERALL ASSESSMENT ===" -ForegroundColor Cyan
+if ($criticalFailures -eq 0 -and $warnings -eq 0) {
+    Write-Host "✓ READY FOR MIGRATION" -ForegroundColor Green
+    Write-Host "All requirements met. You can proceed with Surface Hub 2S migration." -ForegroundColor White
+    $overallStatus = "READY"
+} elseif ($criticalFailures -eq 0) {
+    Write-Host "⚠ MOSTLY READY" -ForegroundColor Yellow
+    Write-Host "$warnings warning(s) found. Review and address before migration." -ForegroundColor White
+    $overallStatus = "MOSTLY_READY"
+} else {
+    Write-Host "✗ NOT READY FOR MIGRATION" -ForegroundColor Red
+    Write-Host "$criticalFailures critical failure(s) must be resolved before migration." -ForegroundColor White
+    $overallStatus = "NOT_READY"
+}
+
+# Create comprehensive JSON report
+$jsonReport = @{
+    ReportInfo = @{
+        GeneratedDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        ScriptVersion = "1.0"
+        ComputerName = $env:COMPUTERNAME
+        OverallStatus = $overallStatus
+        CriticalFailures = $criticalFailures
+        Warnings = $warnings
+    }
+    Results = $Script:Results
+    Summary = @{
+        ReadyForMigration = ($overallStatus -eq "READY")
+        RequiresAttention = ($criticalFailures -gt 0 -or $warnings -gt 0)
+        NextSteps = @()
+    }
+}
+
+# Add specific next steps based on results
+if ($Script:Results.OSBuild.Status -eq "FAIL") {
+    $jsonReport.Summary.NextSteps += "Install Windows Updates to reach OS Build 19045.4123 or later"
+}
+if ($Script:Results.SurfaceUEFI.Status -eq "FAIL") {
+    $jsonReport.Summary.NextSteps += "Install February 8, 2024 System Hardware Update to update Surface UEFI"
+}
+if ($Script:Results.PendingUpdates.Status -eq "FAIL") {
+    $jsonReport.Summary.NextSteps += "Install all pending Windows Updates"
+}
+if ($Script:Results.DiskSpace.Status -eq "FAIL") {
+    $jsonReport.Summary.NextSteps += "Free up disk space to have at least 30GB available"
+}
+if ($Script:Results.NetworkURLs.Status -eq "FAIL") {
+    $jsonReport.Summary.NextSteps += "Resolve network connectivity issues for activation URLs"
+}
+if ($Script:Results.InternetAccess.Status -eq "FAIL") {
+    $jsonReport.Summary.NextSteps += "Establish internet connectivity"
+}
+
+# Export to JSON file
+try {
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $deviceName = $env:COMPUTERNAME
+    $desktopPath = [Environment]::GetFolderPath("Desktop")
+    $jsonFilePath = Join-Path -Path $desktopPath -ChildPath "SurfaceHub2S_MigrationCheck_${deviceName}_$timestamp.json"
+    $jsonReport | ConvertTo-Json -Depth 4 | Out-File -FilePath $jsonFilePath -Encoding UTF8
+    
+    Write-Host "`n=== REPORT EXPORTED ===" -ForegroundColor Cyan
+    Write-Host "✓ JSON report saved to desktop: $jsonFilePath" -ForegroundColor Green
+    Write-Host "  Report contains detailed results and next steps for migration preparation." -ForegroundColor Gray
+} catch {
+    Write-Host "`n=== EXPORT ERROR ===" -ForegroundColor Red
+    Write-Host "✗ Failed to export JSON report: $($_.Exception.Message)" -ForegroundColor Red
+}
+
+Write-Host "`nIMPORTANT REMINDER:" -ForegroundColor Yellow
+Write-Host "- Install ALL Windows Updates before attempting migration" -ForegroundColor White
+Write-Host "- Surface Hub 2S Windows 10 Team support ends October 14, 2025" -ForegroundColor White
+
+Write-Host "`nPress Enter to exit..." -ForegroundColor Gray
+try {
+    $null = Read-Host
+} catch {
+    # If Read-Host fails, just pause briefly and exit
+    Start-Sleep -Seconds 2
+}
