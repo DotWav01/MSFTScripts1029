@@ -69,8 +69,9 @@ $Config = @{
 }
 #endregion Configuration
 
-# Create GroupQueryLogs folder if it doesn't exist
-$LogsFolder = "GroupQueryLogs"
+# Create GroupQueryLogs folder if it doesn't exist (next to the script file)
+$ScriptDirectory = Split-Path $MyInvocation.MyCommand.Path
+$LogsFolder = Join-Path $ScriptDirectory "GroupQueryLogs"
 if (!(Test-Path $LogsFolder)) {
     New-Item -ItemType Directory -Path $LogsFolder -Force | Out-Null
 }
