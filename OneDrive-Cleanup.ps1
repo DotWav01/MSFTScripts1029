@@ -55,6 +55,12 @@ $Config = @{
 }
 #endregion Configuration
 
+# Create OneDriveCleanupLogs folder if it doesn't exist
+$LogsFolder = "OneDriveCleanupLogs"
+if (!(Test-Path $LogsFolder)) {
+    New-Item -ItemType Directory -Path $LogsFolder -Force | Out-Null
+}
+
 # Apply configuration defaults and simple defaults if parameters not provided
 if ([string]::IsNullOrEmpty($TenantId)) { $TenantId = $Config.TenantId }
 if ([string]::IsNullOrEmpty($ClientId)) { $ClientId = $Config.ClientId }
@@ -62,7 +68,9 @@ if ([string]::IsNullOrEmpty($Thumbprint)) { $Thumbprint = $Config.Thumbprint }
 if ([string]::IsNullOrEmpty($SharePointAdminUrl)) { $SharePointAdminUrl = $Config.SharePointAdminUrl }
 if ([string]::IsNullOrEmpty($InteractiveClientId)) { $InteractiveClientId = $Config.InteractiveClientId }
 if ([string]::IsNullOrEmpty($CsvFilePath)) { $CsvFilePath = "OneDriveURLs.csv" }
-if ([string]::IsNullOrEmpty($LogFilePath)) { $LogFilePath = "OneDriveCleanup_$(Get-Date -Format 'yyyyMMdd_HHmmss').log" }
+if ([string]::IsNullOrEmpty($LogFilePath)) { 
+    $LogFilePath = Join-Path $LogsFolder "OneDriveCleanup_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+}
 if ([string]::IsNullOrEmpty($TestUserName)) { $TestUserName = "TestUser" }
 
 # Function to write log entries
@@ -189,6 +197,7 @@ function Connect-ToSite {
 # Main script execution
 try {
     Write-Log "=== ONEDRIVE CLEANUP SCRIPT STARTED ==="
+    Write-Log "Log file location: $LogFilePath"
     
     # Check if required modules are installed
     Write-Log "Checking required PowerShell modules..."
@@ -404,6 +413,7 @@ Deletes .mp4 transcript files from OneDrive recycle bins using URLs from CSV fil
 This script reads OneDrive URLs from a CSV file and deletes .mp4 files that contain "transcript" 
 in the filename from their recycle bins. It supports both Azure App Registration certificate 
 authentication and interactive user authentication.
+Log files are automatically organized into a "OneDriveCleanupLogs" folder.
 
 .PARAMETER TenantId
 Your Azure AD Tenant ID (defaults to configured value, required for certificate authentication)
@@ -424,7 +434,7 @@ Your SharePoint Admin Center URL (defaults to configured value)
 Preview mode - shows what would be deleted without actually deleting
 
 .PARAMETER LogFilePath
-Path for log file (optional, defaults to timestamped file in current directory)
+Path for log file (optional, defaults to timestamped file in OneDriveCleanupLogs folder)
 
 .PARAMETER TestMode
 Enables test mode where you can manually specify a OneDrive URL
@@ -472,6 +482,11 @@ CONFIGURATION: Update the configuration section at the top of this script with y
 - Thumbprint: Your certificate thumbprint
 - SharePointAdminUrl: Your SharePoint Admin Center URL
 - InteractiveClientId: Client ID for interactive auth (can be same as ClientId)
+
+LOG FILES: 
+- Log files are automatically organized into a "OneDriveCleanupLogs" folder
+- The folder is created automatically if it doesn't exist
+- Default log file name format: OneDriveCleanup_YYYYMMDD_HHMMSS.log
 
 CSV File Format:
 The script expects a CSV with at least an 'OneDriveURL' column. 
