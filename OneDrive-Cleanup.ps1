@@ -55,8 +55,9 @@ $Config = @{
 }
 #endregion Configuration
 
-# Create OneDriveCleanupLogs folder if it doesn't exist
-$LogsFolder = "OneDriveCleanupLogs"
+# Create OneDriveCleanupLogs folder if it doesn't exist (next to the script file)
+$ScriptDirectory = Split-Path $MyInvocation.MyCommand.Path
+$LogsFolder = Join-Path $ScriptDirectory "OneDriveCleanupLogs"
 if (!(Test-Path $LogsFolder)) {
     New-Item -ItemType Directory -Path $LogsFolder -Force | Out-Null
 }
