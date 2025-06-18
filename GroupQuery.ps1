@@ -69,6 +69,12 @@ $Config = @{
 }
 #endregion Configuration
 
+# Create GroupQueryLogs folder if it doesn't exist
+$LogsFolder = "GroupQueryLogs"
+if (!(Test-Path $LogsFolder)) {
+    New-Item -ItemType Directory -Path $LogsFolder -Force | Out-Null
+}
+
 # Apply configuration defaults and simple defaults if parameters not provided
 if ([string]::IsNullOrEmpty($TenantId)) { $TenantId = $Config.TenantId }
 if ([string]::IsNullOrEmpty($ClientId)) { $ClientId = $Config.ClientId }
@@ -76,7 +82,9 @@ if ([string]::IsNullOrEmpty($Thumbprint)) { $Thumbprint = $Config.Thumbprint }
 if ([string]::IsNullOrEmpty($SharePointAdminUrl)) { $SharePointAdminUrl = $Config.SharePointAdminUrl }
 if (!$UserList -or $UserList.Count -eq 0) { $UserList = $Config.HardCodedUsers }
 if ([string]::IsNullOrEmpty($CsvFilePath)) { $CsvFilePath = "OneDriveURLs.csv" }
-if ([string]::IsNullOrEmpty($LogFilePath)) { $LogFilePath = "GroupQuery_$(Get-Date -Format 'yyyyMMdd_HHmmss').log" }
+if ([string]::IsNullOrEmpty($LogFilePath)) { 
+    $LogFilePath = Join-Path $LogsFolder "GroupQuery_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+}
 
 # Handle group name(s) - support both single and multiple groups
 if ($GroupName -and !$GroupNames) {
@@ -409,6 +417,7 @@ function Merge-CsvData {
 # Main script execution
 try {
     Write-Log "=== GROUP QUERY SCRIPT STARTED ==="
+    Write-Log "Log file location: $LogFilePath"
     
     # Determine operation mode
     $useHardCodedUsers = $UserList -and $UserList.Count -gt 0
@@ -565,6 +574,7 @@ Queries an Entra ID group and updates CSV file with member OneDrive URLs.
 This script queries an Entra ID group to get member OneDrive URLs and updates an existing CSV file or creates a new one.
 It merges new results with existing data, preserving entries not in the current group query.
 Optionally can launch the cleanup script after completion.
+Log files are automatically organized into a "GroupQueryLogs" folder.
 
 .PARAMETER GroupNames
 Array of Entra ID group names to query for OneDrive URLs (supports multiple groups)
@@ -597,7 +607,7 @@ SecureString password for interactive authentication (optional)
 Path to CSV file to update/create (defaults to OneDriveURLs.csv)
 
 .PARAMETER LogFilePath
-Path for log file (optional, defaults to timestamped file)
+Path for log file (optional, defaults to timestamped file in GroupQueryLogs folder)
 
 .PARAMETER CleanupScriptPath
 Path to the cleanup script (optional, defaults to OneDrive-Cleanup.ps1 in same directory)
@@ -639,6 +649,11 @@ CONFIGURATION: Update the configuration section at the top of this script with y
 - SharePointAdminUrl: Your SharePoint Admin Center URL
 - DefaultGroupNames: Array of default group names to query (optional)
 - HardCodedUsers: Array of specific users to process (optional, overrides group query)
+
+LOG FILES: 
+- Log files are automatically organized into a "GroupQueryLogs" folder
+- The folder is created automatically if it doesn't exist
+- Default log file name format: GroupQuery_YYYYMMDD_HHMMSS.log
 
 Multiple Groups Support:
 - Processes all specified groups and combines results
