@@ -1,4 +1,4 @@
-# Exchange Mailbox EWS and Calendar Permissions Checker
+# Exchange Online Mailbox EWS and Calendar Permissions Checker
 # This script reads mailboxes from a CSV file, checks EWS status, and verifies calendar permissions
 
 param(
@@ -23,9 +23,9 @@ function Get-OTDCalendarPermissions {
         # Try different calendar folder names for different languages
         $calendarPaths = @(
             "${MailboxIdentity}:\Calendar",
-            "${MailboxIdentity}:\Kalender",  # German
-            "${MailboxIdentity}:\Calendrier", # French
-            "${MailboxIdentity}:\Calendario"  # Spanish/Italian
+            "${MailboxIdentity}:\Kalender",
+            "${MailboxIdentity}:\Calendrier",
+            "${MailboxIdentity}:\Calendario"
         )
         
         $permissions = $null
@@ -38,8 +38,12 @@ function Get-OTDCalendarPermissions {
                 $allPermissions = Get-MailboxFolderPermission -Identity $path -ErrorAction Stop
                 $workingPath = $path
                 
-                # Look for the OTD account specifically
-                $permissions = $allPermissions | Where-Object { $_.User.ToString() -eq $OTDAccount -or $_.User.ADRecipient.PrimarySmtpAddress -eq $OTDAccount }
+                # Look for the OTD account specifically - multiple matching methods
+                $permissions = $allPermissions | Where-Object { 
+                    ($_.User.ToString() -eq $OTDAccount) -or 
+                    ($_.User.DisplayName -eq $OTDAccount) -or
+                    ($_.User.ADRecipient -and $_.User.ADRecipient.PrimarySmtpAddress -eq $OTDAccount)
+                }
                 
                 if ($permissions) {
                     break
@@ -58,13 +62,20 @@ function Get-OTDCalendarPermissions {
                 CalendarPath = $workingPath
             }
         }
-        else {
-            # No permissions found, but we have a working calendar path
+        elseif ($workingPath) {
             return @{
                 HasPermission = $false
                 AccessRights = "No permissions found for $OTDAccount"
                 FolderPath = "N/A"
                 CalendarPath = $workingPath
+            }
+        }
+        else {
+            return @{
+                HasPermission = $false
+                AccessRights = "Calendar folder not accessible"
+                FolderPath = "N/A"
+                CalendarPath = $null
             }
         }
     }
@@ -111,11 +122,82 @@ function Select-PermissionLevel {
     
     do {
         $choice = Read-Host "Select permission level (1-10)"
-        $validChoice = $choice -match '^([1-9]|10)
+        $validChoice = $choice -match '^([1-9]|10)$'
+        if (-not $validChoice) {
+            Write-Host "Invalid choice. Please enter a number between 1 and 10." -ForegroundColor Red
+        }
+    } while (-not $validChoice)
+    
+    $permissionLevels = @{
+        1 = "Reviewer"
+        2 = "Author"
+        3 = "Editor"
+        4 = "Owner"
+        5 = "PublishingEditor"
+        6 = "PublishingAuthor"
+        7 = "NonEditingAuthor"
+        8 = "Contributor"
+        9 = "AvailabilityOnly"
+        10 = "LimitedDetails"
+    }
+    
+    return $permissionLevels[[int]$choice]
+}
+
+# Function to grant OTD calendar permission
+function Grant-OTDCalendarPermission {
+    param(
+        [string]$CalendarPath,
+        [string]$OTDAccount,
+        [string]$PermissionLevel
+    )
+    
+    try {
+        Add-MailboxFolderPermission -Identity $CalendarPath -User $OTDAccount -AccessRights $PermissionLevel -ErrorAction Stop
+        return @{
+            Success = $true
+            Message = "Permission '$PermissionLevel' granted to $OTDAccount successfully"
+        }
+    }
+    catch {
+        # If permission already exists, try to modify it
+        if ($_.Exception.Message -like "*already has permission*" -or $_.Exception.Message -like "*already exists*") {
+            try {
+                Set-MailboxFolderPermission -Identity $CalendarPath -User $OTDAccount -AccessRights $PermissionLevel -ErrorAction Stop
+                return @{
+                    Success = $true
+                    Message = "Permission updated to '$PermissionLevel' for $OTDAccount successfully"
+                }
+            }
+            catch {
+                return @{
+                    Success = $false
+                    Message = "Failed to update existing permission: $($_.Exception.Message)"
+                }
+            }
+        }
+        else {
+            return @{
+                Success = $false
+                Message = "Failed to grant permission: $($_.Exception.Message)"
+            }
+        }
+    }
+}
 
 # Main script execution
 try {
-    Write-Host "Starting Exchange Mailbox Analysis..." -ForegroundColor Green
+    # Check if connected to Exchange Online
+    try {
+        Get-OrganizationConfig -ErrorAction Stop | Out-Null
+        Write-Host "Connected to Exchange Online" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Not connected to Exchange Online. Please run: Connect-ExchangeOnline" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "Starting Exchange Online Mailbox Analysis..." -ForegroundColor Green
     Write-Host "CSV File: $CsvPath" -ForegroundColor Yellow
     Write-Host "Checking if OTD account has access: $OTDAccount" -ForegroundColor Yellow
     Write-Host "Output will be saved to: $OutputPath" -ForegroundColor Yellow
@@ -127,7 +209,6 @@ try {
     }
 
     # Read the CSV file
-    # Assuming the CSV has a column named "Mailbox", "EmailAddress", "Identity", or "UserPrincipalName"
     $mailboxList = Import-Csv $CsvPath
     
     # Auto-detect the column name for mailbox identities
@@ -165,7 +246,7 @@ try {
         Write-Host "Processing: $mailboxIdentity" -ForegroundColor Cyan
         
         try {
-            # Check EWS status
+            # Check EWS status for Exchange Online
             $casMailbox = Get-CASMailbox -Identity $mailboxIdentity -ErrorAction Stop
             $ewsEnabled = $casMailbox.EWSEnabled
             
@@ -232,6 +313,7 @@ try {
                 Status = "Success"
                 Error = ""
             }
+            
         }
         catch {
             Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
@@ -275,203 +357,19 @@ catch {
     exit 1
 }
 
-# Example CSV format (save as mailboxes.csv):
 <#
+Example CSV format (save as mailboxes.csv):
 Mailbox
 user1@domain.com
 user2@domain.com
 user3@domain.com
+
+Usage examples:
+.\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv"
+.\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv" -OTDAccount "admin@domain.com"
+.\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv" -OTDAccount "otd@domain.com" -OutputPath "C:\reports\mailbox_report.csv"
+
+Prerequisites:
+1. Install Exchange Online PowerShell module: Install-Module -Name ExchangeOnlineManagement
+2. Connect to Exchange Online: Connect-ExchangeOnline
 #>
-
-# Usage examples:
-# .\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv"
-# .\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv" -OTDAccount "admin@domain.com"
-# .\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv" -OTDAccount "otd@domain.com" -OutputPath "C:\reports\mailbox_report.csv"
-        if (-not $validChoice) {
-            Write-Host "Invalid choice. Please enter a number between 1 and 10." -ForegroundColor Red
-        }
-    } while (-not $validChoice)
-    
-    $permissionLevels = @{
-        1 = "Reviewer"
-        2 = "Author"
-        3 = "Editor"
-        4 = "Owner"
-        5 = "PublishingEditor"
-        6 = "PublishingAuthor"
-        7 = "NonEditingAuthor"
-        8 = "Contributor"
-        9 = "AvailabilityOnly"
-        10 = "LimitedDetails"
-    }
-    
-    return $permissionLevels[[int]$choice]
-}
-
-# Function to grant OTD calendar permission
-function Grant-OTDCalendarPermission {
-    param(
-        [string]$CalendarPath,
-        [string]$OTDAccount,
-        [string]$PermissionLevel
-    )
-    
-    try {
-        Add-MailboxFolderPermission -Identity $CalendarPath -User $OTDAccount -AccessRights $PermissionLevel -ErrorAction Stop
-        return @{
-            Success = $true
-            Message = "Permission '$PermissionLevel' granted to $OTDAccount successfully"
-        }
-    }
-    catch {
-        # If permission already exists, try to modify it
-        if ($_.Exception.Message -like "*already has permission*") {
-            try {
-                Set-MailboxFolderPermission -Identity $CalendarPath -User $OTDAccount -AccessRights $PermissionLevel -ErrorAction Stop
-                return @{
-                    Success = $true
-                    Message = "Permission updated to '$PermissionLevel' for $OTDAccount successfully"
-                }
-            }
-            catch {
-                return @{
-                    Success = $false
-                    Message = "Failed to update permission: $($_.Exception.Message)"
-                }
-            }
-        }
-        else {
-            return @{
-                Success = $false
-                Message = "Failed to grant permission: $($_.Exception.Message)"
-            }
-        }
-    }
-}
-
-# Main script execution
-try {
-    Write-Host "Starting Exchange Mailbox Analysis..." -ForegroundColor Green
-    Write-Host "CSV File: $CsvPath" -ForegroundColor Yellow
-    Write-Host "Checking permissions for: $CheckUser" -ForegroundColor Yellow
-    Write-Host "Output will be saved to: $OutputPath" -ForegroundColor Yellow
-    Write-Host ""
-
-    # Check if CSV file exists
-    if (-not (Test-Path $CsvPath)) {
-        throw "CSV file not found: $CsvPath"
-    }
-
-    # Read the CSV file
-    # Assuming the CSV has a column named "Mailbox", "EmailAddress", "Identity", or "UserPrincipalName"
-    $mailboxList = Import-Csv $CsvPath
-    
-    # Auto-detect the column name for mailbox identities
-    $mailboxColumn = $null
-    $possibleColumns = @("Mailbox", "EmailAddress", "Identity", "UserPrincipalName", "Email", "PrimarySmtpAddress")
-    
-    foreach ($col in $possibleColumns) {
-        if ($mailboxList[0].PSObject.Properties.Name -contains $col) {
-            $mailboxColumn = $col
-            break
-        }
-    }
-    
-    if (-not $mailboxColumn) {
-        Write-Host "Available columns in CSV:" -ForegroundColor Red
-        $mailboxList[0].PSObject.Properties.Name | ForEach-Object { Write-Host "  - $_" }
-        throw "Could not find a mailbox column. Please ensure your CSV has one of these columns: $($possibleColumns -join ', ')"
-    }
-    
-    Write-Host "Using column '$mailboxColumn' for mailbox identities" -ForegroundColor Green
-    Write-Host ""
-
-    # Initialize results array
-    $results = @()
-    $totalMailboxes = $mailboxList.Count
-    $currentCount = 0
-
-    # Process each mailbox
-    foreach ($row in $mailboxList) {
-        $currentCount++
-        $mailboxIdentity = $row.$mailboxColumn
-        
-        Write-Progress -Activity "Processing Mailboxes" -Status "Checking $mailboxIdentity ($currentCount of $totalMailboxes)" -PercentComplete (($currentCount / $totalMailboxes) * 100)
-        
-        Write-Host "Processing: $mailboxIdentity" -ForegroundColor Cyan
-        
-        try {
-            # Check EWS status
-            $casMailbox = Get-CASMailbox -Identity $mailboxIdentity -ErrorAction Stop
-            $ewsEnabled = $casMailbox.EWSEnabled
-            
-            # Check calendar permissions
-            $calendarPerms = Get-CalendarPermissions -MailboxIdentity $mailboxIdentity -UserToCheck $CheckUser
-            
-            # Create result object
-            $result = [PSCustomObject]@{
-                Mailbox = $mailboxIdentity
-                EWSEnabled = $ewsEnabled
-                HasCalendarPermission = $calendarPerms.HasPermission
-                CalendarAccessRights = $calendarPerms.AccessRights
-                CalendarFolderPath = $calendarPerms.FolderPath
-                Status = "Success"
-                Error = ""
-            }
-            
-            Write-Host "  EWS Enabled: $ewsEnabled" -ForegroundColor $(if ($ewsEnabled) { "Green" } else { "Red" })
-            Write-Host "  Calendar Permission: $($calendarPerms.HasPermission)" -ForegroundColor $(if ($calendarPerms.HasPermission) { "Green" } else { "Yellow" })
-            if ($calendarPerms.HasPermission) {
-                Write-Host "  Access Rights: $($calendarPerms.AccessRights)" -ForegroundColor Green
-            }
-        }
-        catch {
-            Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
-            
-            $result = [PSCustomObject]@{
-                Mailbox = $mailboxIdentity
-                EWSEnabled = "Error"
-                HasCalendarPermission = $false
-                CalendarAccessRights = "Error retrieving permissions"
-                CalendarFolderPath = "N/A"
-                Status = "Failed"
-                Error = $_.Exception.Message
-            }
-        }
-        
-        $results += $result
-        Write-Host ""
-    }
-
-    # Export results to CSV
-    $results | Export-Csv -Path $OutputPath -NoTypeInformation
-    
-    # Display summary
-    Write-Host "Analysis Complete!" -ForegroundColor Green
-    Write-Host "Results saved to: $OutputPath" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Summary:" -ForegroundColor Cyan
-    Write-Host "Total Mailboxes Processed: $($results.Count)"
-    Write-Host "EWS Enabled: $(($results | Where-Object { $_.EWSEnabled -eq $true }).Count)"
-    Write-Host "EWS Disabled: $(($results | Where-Object { $_.EWSEnabled -eq $false }).Count)"
-    Write-Host "With Calendar Permissions: $(($results | Where-Object { $_.HasCalendarPermission -eq $true }).Count)"
-    Write-Host "Errors: $(($results | Where-Object { $_.Status -eq 'Failed' }).Count)"
-    
-}
-catch {
-    Write-Error "Script failed: $($_.Exception.Message)"
-    exit 1
-}
-
-# Example CSV format (save as mailboxes.csv):
-<#
-Mailbox
-user1@domain.com
-user2@domain.com
-user3@domain.com
-#>
-
-# Usage examples:
-# .\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv"
-# .\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv" -CheckUser "admin@domain.com"
-# .\CheckMailboxEWSAndPermissions.ps1 -CsvPath "C:\temp\mailboxes.csv" -CheckUser "otd@domain.com" -OutputPath "C:\reports\mailbox_report.csv"
