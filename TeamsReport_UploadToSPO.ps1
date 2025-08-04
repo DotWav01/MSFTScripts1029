@@ -137,7 +137,16 @@ try {
     
     # Get SharePoint site ID
     Write-Log "Getting SharePoint site information..." "INFO"
-    $siteId = (Get-MgSite -Search (Split-Path $sharepointSiteUrl -Leaf)).Id
+    $siteName = Split-Path $sharepointSiteUrl -Leaf
+    $sites = Get-MgSite -Search $siteName
+    
+    if ($sites -is [array]) {
+        $site = $sites[0]  # Take the first match if multiple results
+    } else {
+        $site = $sites
+    }
+    
+    $siteId = $site.Id
     Write-Log "SharePoint site ID obtained: $siteId" "SUCCESS"
     
     # Get the drive (document library) ID
