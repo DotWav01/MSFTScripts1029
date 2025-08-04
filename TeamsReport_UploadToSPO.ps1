@@ -23,9 +23,9 @@ function Get-AccessToken {
     )
     
     $body = @{
-        Grant_Type = "client_credentials"
-        Scope = $Scope
-        Client_Id = $AppId
+        Grant_Type = "client_credentials";
+        Scope = $Scope;
+        Client_Id = $AppId;
         Client_Secret = $ClientSecret
     }
     
@@ -52,7 +52,7 @@ function Create-SharePointFolder {
                 if (-not $folder) {
                     # Create folder if it doesn't exist
                     $newFolder = @{
-                        name = $folderPart
+                        name = $folderPart;
                         folder = @{}
                     }
                     $folder = New-MgDriveItem -DriveId $DriveId -ParentId $parentId -BodyParameter $newFolder
@@ -156,9 +156,9 @@ try {
     Write-Log "File size: $($fileBytes.Length) bytes" "INFO"
     
     $uploadParams = @{
-        DriveId = $driveId
-        ParentId = $reportParentId
-        Name = $fileName
+        DriveId = $driveId;
+        ParentId = $reportParentId;
+        Name = $fileName;
         ContentBytes = $fileBytes
     }
     
@@ -180,9 +180,9 @@ try {
     $logBytes = [System.Text.Encoding]::UTF8.GetBytes($logContent)
     
     $logUploadParams = @{
-        DriveId = $driveId
-        ParentId = $logParentId
-        Name = $logFileName
+        DriveId = $driveId;
+        ParentId = $logParentId;
+        Name = $logFileName;
         ContentBytes = $logBytes
     }
     
