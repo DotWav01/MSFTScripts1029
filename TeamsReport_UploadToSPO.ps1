@@ -65,7 +65,7 @@ function Upload-FileToSharePoint {
     )
     
     $fileName = Split-Path $FilePath -Leaf
-    $Url = "https://graph.microsoft.com/v1.0/drives/$DriveID/items/root:/$FolderPath/$fileName:/content"
+    $Url = "https://graph.microsoft.com/v1.0/drives/$($DriveID)/items/root:/$($FolderPath)/$($fileName):/content"
     
     try {
         $result = Invoke-RestMethod -Uri $Url -Headers $Headers -Method Put -InFile $FilePath -ContentType 'multipart/form-data'
