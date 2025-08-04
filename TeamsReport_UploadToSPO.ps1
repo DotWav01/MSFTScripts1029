@@ -34,6 +34,43 @@ function Get-AccessToken {
     return $tokenResponse.access_token
 }
 
+# Function to create folder structure and return parent ID
+function Create-SharePointFolder {
+    param(
+        [string]$DriveId,
+        [string]$FolderPath
+    )
+    
+    $folderParts = $FolderPath.Split('/')
+    $parentId = "root"
+    
+    foreach ($folderPart in $folderParts) {
+        if ($folderPart -ne "Shared Documents") {  # Skip the root folder name
+            try {
+                # Try to get existing folder
+                $folder = Get-MgDriveItem -DriveId $DriveId -DriveItemId $parentId -ChildName $folderPart -ErrorAction SilentlyContinue
+                if (-not $folder) {
+                    # Create folder if it doesn't exist
+                    $newFolder = @{
+                        name = $folderPart
+                        folder = @{}
+                    }
+                    $folder = New-MgDriveItem -DriveId $DriveId -ParentId $parentId -BodyParameter $newFolder
+                    Write-Log "Created folder: $folderPart" "SUCCESS"
+                } else {
+                    Write-Log "Folder already exists: $folderPart" "INFO"
+                }
+                $parentId = $folder.Id
+            }
+            catch {
+                Write-Log "Failed to create/access folder '$folderPart': $($_.Exception.Message)" "ERROR"
+                throw
+            }
+        }
+    }
+    return $parentId
+}
+
 # Get timestamp for filename
 $timeStamp = Get-Date -Format "MMddyyyy_hhmm"
 $fileName = "TeamsUserActivity-$timeStamp.csv"
