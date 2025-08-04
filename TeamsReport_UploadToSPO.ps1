@@ -10,10 +10,12 @@ $sharepointClientSecret = "redacted"
 
 # SharePoint configuration
 $sharepointSiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
-$targetFolderPath = "Shared Documents/Reports/Teams Activity"  # Modify this path as needed
-$logFolderPath = "Shared Documents/Logs"  # Folder for log files
+$sharepointSiteID = "your-site-id"  # You'll need to provide this
+$sharepointLibraryURL = "https://yourtenant.sharepoint.com/sites/yoursite/Shared%20Documents"  # URL to your document library
+$reportFolder = "Reports/Teams Activity"  # Folder path within the library
+$logFolder = "Logs"  # Folder path for logs
 
-# Function to get access token
+# Function to get access token (Graph API style)
 function Get-AccessToken {
     param(
         [string]$AppId,
@@ -34,41 +36,45 @@ function Get-AccessToken {
     return $tokenResponse.access_token
 }
 
-# Function to create folder structure and return parent ID
-function Create-SharePointFolder {
+# Function to get SharePoint drive ID
+function Get-SharePointDriveID {
     param(
-        [string]$DriveId,
-        [string]$FolderPath
+        [string]$SiteID,
+        [string]$LibraryURL,
+        [hashtable]$Headers
     )
     
-    $folderParts = $FolderPath.Split('/')
-    $parentId = "root"
+    $GraphUrl = "https://graph.microsoft.com/v1.0/sites/$SiteID/drives"
+    $Result = Invoke-RestMethod -Uri $GraphUrl -Method 'GET' -Headers $Headers -ContentType "application/json"
+    $DriveID = $Result.value | Where-Object {$_.webURL -eq $LibraryURL } | Select-Object id -ExpandProperty id
     
-    foreach ($folderPart in $folderParts) {
-        if ($folderPart -ne "Shared Documents") {  # Skip the root folder name
-            try {
-                # Try to get existing folder
-                $folder = Get-MgDriveItem -DriveId $DriveId -DriveItemId $parentId -ChildName $folderPart -ErrorAction SilentlyContinue
-                if (-not $folder) {
-                    # Create folder if it doesn't exist
-                    $newFolder = @{
-                        name = $folderPart;
-                        folder = @{}
-                    }
-                    $folder = New-MgDriveItem -DriveId $DriveId -ParentId $parentId -BodyParameter $newFolder
-                    Write-Log "Created folder: $folderPart" "SUCCESS"
-                } else {
-                    Write-Log "Folder already exists: $folderPart" "INFO"
-                }
-                $parentId = $folder.Id
-            }
-            catch {
-                Write-Log "Failed to create/access folder '$folderPart': $($_.Exception.Message)" "ERROR"
-                throw
-            }
-        }
+    if ($DriveID -eq $null) {
+        throw "SharePoint Library under $LibraryURL could not be found."
     }
-    return $parentId
+    
+    return $DriveID
+}
+
+# Function to upload file to SharePoint
+function Upload-FileToSharePoint {
+    param(
+        [string]$FilePath,
+        [string]$DriveID,
+        [string]$FolderPath,
+        [hashtable]$Headers
+    )
+    
+    $fileName = Split-Path $FilePath -Leaf
+    $Url = "https://graph.microsoft.com/v1.0/drives/$DriveID/items/root:/$FolderPath/$fileName:/content"
+    
+    try {
+        $result = Invoke-RestMethod -Uri $Url -Headers $Headers -Method Put -InFile $FilePath -ContentType 'multipart/form-data'
+        return $result
+    }
+    catch {
+        # If folder doesn't exist, the upload will fail, but we'll let the calling function handle this
+        throw
+    }
 }
 
 # Get timestamp for filename
@@ -102,7 +108,7 @@ function Write-Log {
 try {
     Write-Log "=== Teams Activity Report Script Started ===" "INFO"
     Write-Log "Report file: $fileName" "INFO"
-    Write-Log "Target SharePoint location: $sharepointSiteUrl/$targetFolderPath" "INFO"
+    Write-Log "Target SharePoint location: $sharepointSiteUrl" "INFO"
     
     # STEP 1: Get Teams report using Teams app credentials
     Write-Log "Getting Teams access token..." "INFO"
@@ -124,80 +130,50 @@ try {
     Disconnect-MgGraph
     Write-Log "Disconnected from Graph (Teams session)" "INFO"
     
-    # STEP 2: Upload to SharePoint using SharePoint app credentials
+    # STEP 2: Upload to SharePoint using SharePoint app credentials and your working method
     Write-Log "Getting SharePoint access token..." "INFO"
     $sharepointAccessToken = Get-AccessToken -AppId $sharepointAppId -TenantId $sharepointTenantId -ClientSecret $sharepointClientSecret -Scope "https://graph.microsoft.com/.default"
-    $sharepointSecureToken = ConvertTo-SecureString $sharepointAccessToken -AsPlainText -Force
     Write-Log "SharePoint access token obtained successfully" "SUCCESS"
     
-    # Connect to Graph with SharePoint credentials
-    Write-Log "Connecting to Graph for SharePoint operations..." "INFO"
-    Connect-MgGraph -AccessToken $sharepointSecureToken -NoWelcome
-    Write-Log "Connected to Graph with SharePoint credentials" "SUCCESS"
-    
-    # Get SharePoint site ID
-    Write-Log "Getting SharePoint site information..." "INFO"
-    $siteName = Split-Path $sharepointSiteUrl -Leaf
-    $sites = Get-MgSite -Search $siteName
-    
-    if ($sites -is [array]) {
-        $site = $sites[0]  # Take the first match if multiple results
-    } else {
-        $site = $sites
+    # Create headers for SharePoint API calls
+    $Headers = @{
+        Authorization = "Bearer $sharepointAccessToken";
+        "Content-Type" = "application/json"
     }
     
-    $siteId = $site.Id
-    Write-Log "SharePoint site ID obtained: $siteId" "SUCCESS"
+    # Get SharePoint drive ID
+    Write-Log "Getting SharePoint drive information..." "INFO"
+    $DriveID = Get-SharePointDriveID -SiteID $sharepointSiteID -LibraryURL $sharepointLibraryURL -Headers $Headers
+    Write-Log "SharePoint drive ID obtained: $DriveID" "SUCCESS"
     
-    # Get the drive (document library) ID
-    $drives = Get-MgSiteDrive -SiteId $siteId
-    $driveId = ($drives | Where-Object { $_.Name -eq "Documents" }).Id
-    Write-Log "Document library ID obtained: $driveId" "SUCCESS"
-    
-    # Create folder structure for reports
-    Write-Log "Ensuring report folder structure exists: $targetFolderPath" "INFO"
-    $reportParentId = Create-SharePointFolder -DriveId $driveId -FolderPath $targetFolderPath
-    
-    # Upload file to SharePoint
-    Write-Log "Uploading file to SharePoint..." "INFO"
-    $fileContent = Get-Content $tempFile -Raw -Encoding UTF8
-    $fileBytes = [System.Text.Encoding]::UTF8.GetBytes($fileContent)
-    Write-Log "File size: $($fileBytes.Length) bytes" "INFO"
-    
-    $uploadParams = @{
-        DriveId = $driveId;
-        ParentId = $reportParentId;
-        Name = $fileName;
-        ContentBytes = $fileBytes
+    # Upload Teams report file
+    Write-Log "Uploading Teams report file to SharePoint..." "INFO"
+    try {
+        $uploadResult = Upload-FileToSharePoint -FilePath $tempFile -DriveID $DriveID -FolderPath $reportFolder -Headers $Headers
+        Write-Log "Successfully uploaded '$fileName' to SharePoint!" "SUCCESS"
+        Write-Log "File location: $sharepointSiteUrl/$reportFolder/$fileName" "SUCCESS"
     }
-    
-    $uploadedFile = Set-MgDriveItemContent @uploadParams
-    Write-Log "Successfully uploaded '$fileName' to SharePoint!" "SUCCESS"
-    Write-Log "File location: $sharepointSiteUrl/$targetFolderPath/$fileName" "SUCCESS"
+    catch {
+        Write-Log "Upload failed, possibly due to missing folder. Error: $($_.Exception.Message)" "WARNING"
+        Write-Log "You may need to create the folder '$reportFolder' manually in SharePoint." "WARNING"
+    }
     
     # Clean up temporary CSV file
     Remove-Item $tempFile -Force
     Write-Log "Temporary CSV file cleaned up" "INFO"
     
-    # Create folder structure for logs
-    Write-Log "Ensuring log folder structure exists: $logFolderPath" "INFO"
-    $logParentId = Create-SharePointFolder -DriveId $driveId -FolderPath $logFolderPath
-    
-    # Upload log file to SharePoint in logs folder
-    Write-Log "Uploading log file to SharePoint logs folder..." "INFO"
-    $logContent = Get-Content $logFile -Raw -Encoding UTF8
-    $logBytes = [System.Text.Encoding]::UTF8.GetBytes($logContent)
-    
-    $logUploadParams = @{
-        DriveId = $driveId;
-        ParentId = $logParentId;
-        Name = $logFileName;
-        ContentBytes = $logBytes
+    # Upload log file
+    Write-Log "Uploading log file to SharePoint..." "INFO"
+    try {
+        $logUploadResult = Upload-FileToSharePoint -FilePath $logFile -DriveID $DriveID -FolderPath $logFolder -Headers $Headers
+        Write-Log "Log file uploaded successfully: $logFileName" "SUCCESS"
+        Write-Log "Log file location: $sharepointSiteUrl/$logFolder/$logFileName" "SUCCESS"
+    }
+    catch {
+        Write-Log "Log upload failed, possibly due to missing folder. Error: $($_.Exception.Message)" "WARNING"
+        Write-Log "You may need to create the folder '$logFolder' manually in SharePoint." "WARNING"
     }
     
-    $uploadedLogFile = Set-MgDriveItemContent @logUploadParams
-    Write-Log "Log file uploaded successfully: $logFileName" "SUCCESS"
-    Write-Log "Log file location: $sharepointSiteUrl/$logFolderPath/$logFileName" "SUCCESS"
     Write-Log "=== Script completed successfully ===" "SUCCESS"
     
 } catch {
@@ -214,13 +190,5 @@ try {
     # Clean up temporary log file (since it's uploaded to SharePoint)
     if (Test-Path $logFile) {
         Remove-Item $logFile -Force
-    }
-    
-    # Ensure we disconnect from Graph
-    try {
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
-        Write-Log "Disconnected from Graph" "INFO"
-    } catch {
-        # Ignore errors during disconnect
     }
 }
