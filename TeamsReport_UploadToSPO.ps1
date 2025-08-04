@@ -145,43 +145,6 @@ try {
     $driveId = ($drives | Where-Object { $_.Name -eq "Documents" }).Id
     Write-Log "Document library ID obtained: $driveId" "SUCCESS"
     
-# Function to create folder structure and return parent ID
-function Create-SharePointFolder {
-    param(
-        [string]$DriveId,
-        [string]$FolderPath
-    )
-    
-    $folderParts = $FolderPath.Split('/')
-    $parentId = "root"
-    
-    foreach ($folderPart in $folderParts) {
-        if ($folderPart -ne "Shared Documents") {  # Skip the root folder name
-            try {
-                # Try to get existing folder
-                $folder = Get-MgDriveItem -DriveId $DriveId -DriveItemId $parentId -ChildName $folderPart -ErrorAction SilentlyContinue
-                if (-not $folder) {
-                    # Create folder if it doesn't exist
-                    $newFolder = @{
-                        name = $folderPart
-                        folder = @{}
-                    }
-                    $folder = New-MgDriveItem -DriveId $DriveId -ParentId $parentId -BodyParameter $newFolder
-                    Write-Log "Created folder: $folderPart" "SUCCESS"
-                } else {
-                    Write-Log "Folder already exists: $folderPart" "INFO"
-                }
-                $parentId = $folder.Id
-            }
-            catch {
-                Write-Log "Failed to create/access folder '$folderPart': $($_.Exception.Message)" "ERROR"
-                throw
-            }
-        }
-    }
-    return $parentId
-}
-    
     # Create folder structure for reports
     Write-Log "Ensuring report folder structure exists: $targetFolderPath" "INFO"
     $reportParentId = Create-SharePointFolder -DriveId $driveId -FolderPath $targetFolderPath
@@ -251,3 +214,4 @@ function Create-SharePointFolder {
     } catch {
         # Ignore errors during disconnect
     }
+}
