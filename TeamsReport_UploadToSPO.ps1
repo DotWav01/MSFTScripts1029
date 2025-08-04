@@ -12,8 +12,8 @@ $sharepointClientSecret = "redacted"
 $sharepointSiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"
 $sharepointSiteID = "your-site-id"  # You'll need to provide this
 $sharepointLibraryURL = "https://yourtenant.sharepoint.com/sites/yoursite/Shared%20Documents"  # URL to your document library
-$reportFolder = "Reports/Teams Activity"  # Folder path within the library
-$logFolder = "Logs"  # Folder path for logs
+
+# Note: reportFolder and logFolder are now dynamically set based on current date (see below)
 
 # Function to get access token (Graph API style)
 function Get-AccessToken {
@@ -77,10 +77,18 @@ function Upload-FileToSharePoint {
     }
 }
 
-# Get timestamp for filename
-$timeStamp = Get-Date -Format "MMddyyyy_hhmm"
+# Get timestamp for filename and folder organization
+$currentDate = Get-Date
+$timeStamp = $currentDate.ToString("MMddyyyy_hhmm")
+$monthName = $currentDate.ToString("MMMM")  # Full month name (e.g., "August")
+$year = $currentDate.ToString("yyyy")
+
 $fileName = "TeamsUserActivity-$timeStamp.csv"
 $logFileName = "TeamsActivityScript-$timeStamp.log"
+
+# Dynamic folder paths based on current month/year
+$reportFolder = "Reports/Teams Activity/$year/$monthName"  # e.g., "Reports/Teams Activity/2025/August"
+$logFolder = "Logs/$year/$monthName"  # e.g., "Logs/2025/August"
 
 # Create temporary local file paths
 $tempFile = "$env:TEMP\$fileName"
@@ -108,6 +116,8 @@ function Write-Log {
 try {
     Write-Log "=== Teams Activity Report Script Started ===" "INFO"
     Write-Log "Report file: $fileName" "INFO"
+    Write-Log "Report will be uploaded to: $reportFolder" "INFO"
+    Write-Log "Log will be uploaded to: $logFolder" "INFO"
     Write-Log "Target SharePoint location: $sharepointSiteUrl" "INFO"
     
     # STEP 1: Get Teams report using Teams app credentials
