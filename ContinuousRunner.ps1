@@ -51,26 +51,13 @@ function Invoke-GroupQueryScript {
     Write-RunnerLog "=== Starting GroupQuery execution ==="
     
     try {
-        # Build parameter list for splatting
-        $paramString = ""
+        Write-RunnerLog "Executing in PowerShell $($PSVersionTable.PSVersion): $GroupQueryScriptPath"
+        
         if ($ScriptParameters.Count -gt 0) {
-            $paramArray = @()
-            foreach ($key in $ScriptParameters.Keys) {
-                $value = $ScriptParameters[$key]
-                if ($value -is [switch] -or $value -eq $true) {
-                    $paramArray += "-$key"
-                } elseif ($value -eq $false) {
-                    $paramArray += "-$key:`$false"
-                } else {
-                    $paramArray += "-$key `"$value`""
-                }
-            }
-            $paramString = $paramArray -join " "
+            Write-RunnerLog "Script parameters provided: $($ScriptParameters.Keys -join ', ')"
         }
         
-        Write-RunnerLog "Executing: $GroupQueryScriptPath $paramString"
-        
-        # Execute the script
+        # Execute the script using splatting (much cleaner than string building)
         if ($ScriptParameters.Count -gt 0) {
             & $GroupQueryScriptPath @ScriptParameters
         } else {
@@ -85,6 +72,7 @@ function Invoke-GroupQueryScript {
     }
     catch {
         Write-RunnerLog "Error executing GroupQuery: $($_.Exception.Message)" "ERROR"
+        Write-RunnerLog "Stack trace: $($_.ScriptStackTrace)" "ERROR"
     }
     
     Write-RunnerLog "=== GroupQuery execution completed ==="
