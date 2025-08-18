@@ -1,8 +1,1 @@
 Wanted to point out:
-I'm not sure if the Windows 11 upgrade had much of an impact on the issue the Cebu and Manila users are experiencing. There were some Windows 10 users also having the same problem (one-way audio).
-Like Alisa mentioned, Genesys made a statement that the cause of the issue was a resource constraint on the impacted cloud PC(s). We upgraded one user's cloud PC, and the problems persist.
-The other recommendation Genesys made was to allow the use of the WebRTC media helper, which requires sign-in into PureCloud from the physical device.
-[WebRTC Media Helper overview - Genesys Cloud Resource Center]
-Note: It is possible for us to allow access to just the PureCloud app outside of the Equitable network. However, I'm unsure as to the extent of what the user will have access to in the PureCloud portal externally. We can also apply geofencing restrictions to only allow PureCloud sign-ins from particular office locations, and also force the user to agree to a terms of service before they can log in.
-While I think the option above can help improve things, it still does not explain why these two locations are suddenly having this issue.
-Any network or policy changes on our end should impact a much larger community of users.
