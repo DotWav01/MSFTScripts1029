@@ -67,24 +67,53 @@ try {
     $ScriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
     Write-LogMessage "Script directory: $ScriptDirectory" "INFO"
     
-    # Define applications to install with their silent install parameters
+    # Define applications to install in specific order (Npcap must be installed before Wireshark)
     $Applications = @(
         @{
             Name = "Npcap"
             Pattern = "*npcap*.exe"
             Arguments = "/S"  # Silent install for Npcap
+            Priority = 1
         },
         @{
-            Name = "Wireshark"
+            Name = "Wireshark" 
             Pattern = "*wireshark*.exe"
             Arguments = "/S"  # Silent install for Wireshark
+            Priority = 2
+            DependsOn = "Npcap"
         }
     )
     
     $InstallResults = @()
     
+    # Sort applications by priority to ensure correct installation order
+    $Applications = $Applications | Sort-Object Priority
+    
     foreach ($App in $Applications) {
         Write-LogMessage "Looking for $($App.Name) installer..." "INFO"
+        
+        # Check if dependency was successfully installed (if applicable)
+        if ($App.DependsOn) {
+            $DependencyResult = $InstallResults | Where-Object { $_.App -eq $App.DependsOn }
+            if ($DependencyResult -and -not $DependencyResult.Success) {
+                Write-LogMessage "Skipping $($App.Name) installation because dependency $($App.DependsOn) failed to install" "ERROR"
+                $InstallResults += @{
+                    App = $App.Name
+                    Success = $false
+                    Reason = "Dependency $($App.DependsOn) installation failed"
+                }
+                continue
+            }
+            elseif (-not $DependencyResult) {
+                Write-LogMessage "Skipping $($App.Name) installation because dependency $($App.DependsOn) was not found/attempted" "ERROR"
+                $InstallResults += @{
+                    App = $App.Name
+                    Success = $false
+                    Reason = "Dependency $($App.DependsOn) not found"
+                }
+                continue
+            }
+        }
         
         # Find the EXE file matching the pattern
         $ExeFiles = Get-ChildItem -Path $ScriptDirectory -Filter $App.Pattern -File
@@ -106,7 +135,8 @@ try {
         $ExeFile = $ExeFiles[0]
         $ExePath = $ExeFile.FullName
         
-        # Install the application
+        # Install the application and wait for it to complete
+        Write-LogMessage "Installing $($App.Name) - waiting for completion..." "INFO"
         $InstallSuccess = Install-Application -ExePath $ExePath -Arguments $App.Arguments -AppName $App.Name
         
         $InstallResults += @{
@@ -115,8 +145,14 @@ try {
             Path = $ExePath
         }
         
-        # Add a small delay between installations
-        Start-Sleep -Seconds 5
+        if ($InstallSuccess) {
+            Write-LogMessage "$($App.Name) installation completed successfully. Ready for next application." "SUCCESS"
+            # Add a longer delay after successful installation to ensure system is ready
+            Start-Sleep -Seconds 10
+        } else {
+            Write-LogMessage "$($App.Name) installation failed. Stopping installation process." "ERROR"
+            break  # Stop installing subsequent applications if current one fails
+        }
     }
     
     # Summary
