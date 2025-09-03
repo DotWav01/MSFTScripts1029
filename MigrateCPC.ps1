@@ -418,122 +418,6 @@ function Show-MainMenu {
     Write-Host ""
 }
 
-# Complete recovery workflow
-function Start-RecoveryWorkflow {
-    Write-Host "`nStarting Complete Recovery Workflow" -ForegroundColor Cyan
-    Write-Host "====================================" -ForegroundColor Cyan
-    
-    # Step 1: Get user
-    $userPrincipalName = Read-Host "Enter user's email address (UPN)"
-    if (-not $userPrincipalName) {
-        Write-Host "Invalid user principal name" -ForegroundColor Red
-        return
-    }
-    
-    # Step 2: Get policies
-    $policies = Get-CloudPCProvisioningPolicies
-    if (-not $policies) {
-        Write-Host "Cannot proceed without provisioning policies" -ForegroundColor Red
-        return
-    }
-    
-    Show-ProvisioningPolicies -Policies $policies
-    
-    # Step 3: Select source policy
-    Write-Host "`nSelect source provisioning policy (or press Enter to skip removal):" -ForegroundColor Yellow
-    $sourceChoice = Read-Host "Enter policy number (1-$($policies.Count))"
-    
-    $sourceGroupId = $null
-    if ($sourceChoice -and [int]$sourceChoice -ge 1 -and [int]$sourceChoice -le $policies.Count) {
-        $sourcePolicy = $policies[[int]$sourceChoice - 1]
-        if ($sourcePolicy.AssignedGroups.Count -eq 1) {
-            $sourceGroupId = $sourcePolicy.AssignedGroups[0].GroupId
-        } elseif ($sourcePolicy.AssignedGroups.Count -gt 1) {
-            Write-Host "Multiple groups found for source policy. Select group:" -ForegroundColor Yellow
-            for ($i = 0; $i -lt $sourcePolicy.AssignedGroups.Count; $i++) {
-                Write-Host "  [$($i + 1)] $($sourcePolicy.AssignedGroups[$i].GroupName)"
-            }
-            $groupChoice = Read-Host "Enter group number"
-            if ($groupChoice -and [int]$groupChoice -ge 1 -and [int]$groupChoice -le $sourcePolicy.AssignedGroups.Count) {
-                $sourceGroupId = $sourcePolicy.AssignedGroups[[int]$groupChoice - 1].GroupId
-            }
-        }
-    }
-    
-    # Step 4: Select target policy
-    Write-Host "`nSelect target (recovery) provisioning policy:" -ForegroundColor Yellow
-    $targetChoice = Read-Host "Enter policy number (1-$($policies.Count))"
-    
-    if (-not $targetChoice -or [int]$targetChoice -lt 1 -or [int]$targetChoice -gt $policies.Count) {
-        Write-Host "Invalid target policy selection" -ForegroundColor Red
-        return
-    }
-    
-    $targetPolicy = $policies[[int]$targetChoice - 1]
-    $targetGroupId = $null
-    
-    if ($targetPolicy.AssignedGroups.Count -eq 1) {
-        $targetGroupId = $targetPolicy.AssignedGroups[0].GroupId
-    } elseif ($targetPolicy.AssignedGroups.Count -gt 1) {
-        Write-Host "Multiple groups found for target policy. Select group:" -ForegroundColor Yellow
-        for ($i = 0; $i -lt $targetPolicy.AssignedGroups.Count; $i++) {
-            Write-Host "  [$($i + 1)] $($targetPolicy.AssignedGroups[$i].GroupName)"
-        }
-        $groupChoice = Read-Host "Enter group number"
-        if ($groupChoice -and [int]$groupChoice -ge 1 -and [int]$groupChoice -le $targetPolicy.AssignedGroups.Count) {
-            $targetGroupId = $targetPolicy.AssignedGroups[[int]$groupChoice - 1].GroupId
-        }
-    } else {
-        Write-Host "No groups assigned to target policy" -ForegroundColor Red
-        return
-    }
-    
-    # Step 5: Move user
-    Write-Host "`nMoving user between groups..." -ForegroundColor Yellow
-    $moveResult = Move-UserBetweenGroups -UserPrincipalName $userPrincipalName -SourceGroupId $sourceGroupId -TargetGroupId $targetGroupId
-    
-    if (-not $moveResult) {
-        Write-Host "Failed to move user. Workflow stopped." -ForegroundColor Red
-        return
-    }
-    
-    # Step 6: Check current Cloud PC status
-    Write-Host "`nChecking current Cloud PC status..." -ForegroundColor Yellow
-    $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
-    
-    if ($cloudPCs) {
-        Show-CloudPCStatus -CloudPCs $cloudPCs
-        
-        # Step 7: Handle grace period
-        $gracePeriodPCs = $cloudPCs | Where-Object { $_.IsInGracePeriod }
-        if ($gracePeriodPCs) {
-            Write-Host "`nFound Cloud PCs in grace period." -ForegroundColor Yellow
-            $endGrace = Read-Host "Do you want to end the grace period to start reprovisioning? (y/n)"
-            
-            if ($endGrace -eq 'y' -or $endGrace -eq 'Y') {
-                foreach ($pc in $gracePeriodPCs) {
-                    End-CloudPCGracePeriod -CloudPCId $pc.Id
-                }
-            }
-        }
-    }
-    
-    # Step 8: Monitor new provisioning
-    Write-Host "`nWould you like to monitor the new Cloud PC provisioning?" -ForegroundColor Yellow
-    $monitor = Read-Host "Monitor provisioning? (y/n)"
-    
-    if ($monitor -eq 'y' -or $monitor -eq 'Y') {
-        $timeoutMinutes = Read-Host "Enter timeout in minutes (default: 30)"
-        if (-not $timeoutMinutes -or -not [int]::TryParse($timeoutMinutes, [ref]$null)) {
-            $timeoutMinutes = 30
-        }
-        
-        Wait-ForProvisioning -UserPrincipalName $userPrincipalName -TimeoutMinutes ([int]$timeoutMinutes)
-    }
-    
-    Write-Host "`nRecovery workflow completed!" -ForegroundColor Green
-}
-
 # Main script execution
 Show-Banner
 
@@ -665,9 +549,9 @@ do {
         }
         
         default {
-            Write-Host "Invalid option. Please select 1-7." -ForegroundColor Red
+            Write-Host "Invalid option. Please select 1-8." -ForegroundColor Red
             Start-Sleep -Seconds 2
         }
     }
     
-} while ($choice -ne "7")
+} while ($choice -ne "8")
