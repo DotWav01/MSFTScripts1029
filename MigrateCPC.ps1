@@ -81,6 +81,8 @@ function Get-CloudPCProvisioningPolicies {
         
         $policyList = @()
         foreach ($policy in $policies.value) {
+            Write-Host "  Processing policy: $($policy.displayName)..." -ForegroundColor Gray
+            
             $policyInfo = [PSCustomObject]@{
                 Id = $policy.id
                 DisplayName = $policy.displayName
@@ -90,30 +92,64 @@ function Get-CloudPCProvisioningPolicies {
                 AssignedGroups = @()
             }
             
-            # Get group assignments for each policy
-            $assignmentUri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/provisioningPolicies/$($policy.id)/assignments"
-            $assignments = Invoke-MgGraphRequest -Uri $assignmentUri -Method GET
-            
-            foreach ($assignment in $assignments.value) {
-                if ($assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget') {
-                    try {
-                        $group = Get-MgGroup -GroupId $assignment.target.groupId -ErrorAction SilentlyContinue
-                        if ($group) {
-                            $policyInfo.AssignedGroups += [PSCustomObject]@{
-                                GroupId = $group.Id
-                                GroupName = $group.DisplayName
-                                GroupType = if ($group.GroupTypes -contains "DynamicMembership") { "Dynamic" } else { "Static" }
+            # Get group assignments for each policy with better error handling
+            try {
+                $assignmentUri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/provisioningPolicies/$($policy.id)/assignments"
+                Write-Host "    Checking assignments..." -ForegroundColor Gray
+                
+                $assignments = Invoke-MgGraphRequest -Uri $assignmentUri -Method GET -ErrorAction Stop
+                
+                if ($assignments.value -and $assignments.value.Count -gt 0) {
+                    Write-Host "    Found $($assignments.value.Count) assignment(s)" -ForegroundColor Gray
+                    
+                    foreach ($assignment in $assignments.value) {
+                        if ($assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget') {
+                            try {
+                                Write-Host "      Getting group details for: $($assignment.target.groupId)" -ForegroundColor Gray
+                                $group = Get-MgGroup -GroupId $assignment.target.groupId -ErrorAction Stop
+                                
+                                if ($group) {
+                                    $policyInfo.AssignedGroups += [PSCustomObject]@{
+                                        GroupId = $group.Id
+                                        GroupName = $group.DisplayName
+                                        GroupType = if ($group.GroupTypes -contains "DynamicMembership") { "Dynamic" } else { "Static" }
+                                    }
+                                    Write-Host "      Added group: $($group.DisplayName)" -ForegroundColor Gray
+                                }
+                            }
+                            catch {
+                                Write-Host "      Warning: Could not retrieve group $($assignment.target.groupId): $($_.Exception.Message)" -ForegroundColor Yellow
+                                $policyInfo.AssignedGroups += [PSCustomObject]@{
+                                    GroupId = $assignment.target.groupId
+                                    GroupName = "Group not accessible (ID: $($assignment.target.groupId))"
+                                    GroupType = "Unknown"
+                                }
                             }
                         }
-                    }
-                    catch {
-                        $policyInfo.AssignedGroups += [PSCustomObject]@{
-                            GroupId = $assignment.target.groupId
-                            GroupName = "Unknown (Access Denied or Deleted)"
-                            GroupType = "Unknown"
+                        elseif ($assignment.target.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget') {
+                            $policyInfo.AssignedGroups += [PSCustomObject]@{
+                                GroupId = "AllLicensedUsers"
+                                GroupName = "All Licensed Users"
+                                GroupType = "Built-in"
+                            }
+                            Write-Host "      Added assignment: All Licensed Users" -ForegroundColor Gray
+                        }
+                        elseif ($assignment.target.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget') {
+                            $policyInfo.AssignedGroups += [PSCustomObject]@{
+                                GroupId = "AllDevices"
+                                GroupName = "All Devices"
+                                GroupType = "Built-in"
+                            }
+                            Write-Host "      Added assignment: All Devices" -ForegroundColor Gray
                         }
                     }
+                } else {
+                    Write-Host "    No assignments found" -ForegroundColor Gray
                 }
+            }
+            catch {
+                Write-Host "    Warning: Could not retrieve assignments for policy '$($policy.displayName)': $($_.Exception.Message)" -ForegroundColor Yellow
+                # Continue processing other policies even if one fails
             }
             
             $policyList += $policyInfo
@@ -124,6 +160,7 @@ function Get-CloudPCProvisioningPolicies {
     }
     catch {
         Write-Host "Error retrieving provisioning policies: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Full error details: $($_.Exception)" -ForegroundColor Red
         return $null
     }
 }
@@ -145,7 +182,11 @@ function Show-ProvisioningPolicies {
         Write-Host "`n[$($i + 1)] $($policy.DisplayName)" -ForegroundColor Yellow
         Write-Host "    Policy ID: $($policy.Id)" -ForegroundColor Gray
         Write-Host "    Description: $($policy.Description)" -ForegroundColor Gray
-        Write-Host "    Cloud PC Size: $($policy.CloudPCSize)" -ForegroundColor Gray
+        Write-Host "    Image: $($policy.ImageDisplayName)" -ForegroundColor Gray
+        Write-Host "    Domain Join Type: $($policy.DomainJoinType)" -ForegroundColor Gray
+        Write-Host "    Type: $($policy.Type)" -ForegroundColor Gray
+        Write-Host "    Region: $($policy.RegionName)" -ForegroundColor Gray
+        Write-Host "    Connection ID: $($policy.OnPremisesConnectionId)" -ForegroundColor Gray
         Write-Host "    Assigned Groups:" -ForegroundColor White
         
         if ($policy.AssignedGroups.Count -eq 0) {
