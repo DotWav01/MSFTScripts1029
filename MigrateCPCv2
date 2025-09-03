@@ -185,8 +185,9 @@ function Show-ProvisioningPolicies {
         Write-Host "    Policy ID: $($policy.Id)" -ForegroundColor Gray
         Write-Host "    Description: $($policy.Description)" -ForegroundColor Gray
         Write-Host "    Image: $($policy.ImageDisplayName)" -ForegroundColor Gray
+        Write-Host "    Image Type: $($policy.ImageType)" -ForegroundColor Gray
         Write-Host "    Domain Join Type: $($policy.DomainJoinType)" -ForegroundColor Gray
-        Write-Host "    Type: $($policy.Type)" -ForegroundColor Gray
+        Write-Host "    Provisioning Type: $($policy.ProvisioningType)" -ForegroundColor Gray
         Write-Host "    Region: $($policy.RegionName)" -ForegroundColor Gray
         Write-Host "    Connection ID: $($policy.OnPremisesConnectionId)" -ForegroundColor Gray
         Write-Host "    Assigned Groups:" -ForegroundColor White
