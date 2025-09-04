@@ -1,4 +1,4 @@
-# Cloud PC Recovery & Reprovisioning Tool -BETA
+# Cloud PC Recovery & Reprovisioning Tool -V20
 # Requires Microsoft.Graph PowerShell Module
 
 param(
@@ -47,7 +47,255 @@ function Connect-ToMicrosoftGraph {
             $credential = New-Object System.Management.Automation.PSCredential($ClientId, $secureSecret)
             Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $credential -NoWelcome
             $Global:AuthenticationMethod = "App-only"
-        } else {
+        }
+        
+        "3" {
+            Write-Host "`nCheck User Cloud PC Status" -ForegroundColor Cyan
+            Write-Host "==========================" -ForegroundColor Cyan
+            
+            $userPrincipalName = Read-Host "Enter user's email address (UPN)"
+            $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
+            Show-CloudPCStatus -CloudPCs $cloudPCs
+            Read-Host "`nPress Enter to continue"
+        }
+        
+        "4" {
+            Write-Host "`nEnd Grace Period for Cloud PC" -ForegroundColor Cyan
+            Write-Host "=============================" -ForegroundColor Cyan
+            
+            $userPrincipalName = Read-Host "Enter user's email address (UPN)"
+            $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
+            
+            if ($cloudPCs) {
+                Show-CloudPCStatus -CloudPCs $cloudPCs
+                $gracePeriodPCs = $cloudPCs | Where-Object { $_.IsInGracePeriod }
+                
+                if ($gracePeriodPCs) {
+                    foreach ($pc in $gracePeriodPCs) {
+                        $confirm = Read-Host "`nEnd grace period for '$($pc.DisplayName)'? (y/n)"
+                        if ($confirm -eq 'y' -or $confirm -eq 'Y') {
+                            End-CloudPCGracePeriod -CloudPCId $pc.Id
+                        }
+                    }
+                } else {
+                    Write-Host "No Cloud PCs in grace period found" -ForegroundColor Yellow
+                }
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        
+        "5" {
+            Write-Host "`nMonitor New Cloud PC Provisioning" -ForegroundColor Cyan
+            Write-Host "==================================" -ForegroundColor Cyan
+            
+            $userPrincipalName = Read-Host "Enter user's email address (UPN)"
+            $timeoutMinutes = Read-Host "Enter timeout in minutes (default: 30)"
+            if (-not $timeoutMinutes -or -not [int]::TryParse($timeoutMinutes, [ref]$null)) {
+                $timeoutMinutes = 30
+            }
+            
+            Wait-ForProvisioning -UserPrincipalName $userPrincipalName -TimeoutMinutes ([int]$timeoutMinutes)
+            Read-Host "`nPress Enter to continue"
+        }
+        
+        "6" {
+            Write-Host "`nComplete Recovery Workflow" -ForegroundColor Cyan
+            Write-Host "===========================" -ForegroundColor Cyan
+            
+            # Step 1: Get user
+            $userPrincipalName = Read-Host "Enter user's email address (UPN)"
+            if (-not $userPrincipalName) {
+                Write-Host "Invalid user principal name" -ForegroundColor Red
+                Read-Host "`nPress Enter to continue"
+                continue
+            }
+            
+            # Step 2: Get user's current provisioning policy
+            Write-Host "`nDiscovering user's current provisioning policy..." -ForegroundColor Yellow
+            $currentPolicy = Get-UserCurrentProvisioningPolicy -UserPrincipalName $userPrincipalName
+            
+            if (-not $currentPolicy) {
+                Write-Host "Could not determine user's current provisioning policy. User may not have a Cloud PC yet." -ForegroundColor Yellow
+                $proceedWithoutCurrent = Read-Host "Do you want to proceed without knowing the current policy? (y/n)"
+                if ($proceedWithoutCurrent -ne 'y' -and $proceedWithoutCurrent -ne 'Y') {
+                    Read-Host "`nPress Enter to continue"
+                    continue
+                }
+            } else {
+                Write-Host "`nCurrent Policy Information:" -ForegroundColor Cyan
+                Write-Host "  Policy: $($currentPolicy.PolicyName)" -ForegroundColor White
+                Write-Host "  Cloud PC: $($currentPolicy.CloudPCName)" -ForegroundColor White
+                Write-Host "  Status: $($currentPolicy.CloudPCStatus)" -ForegroundColor White
+            }
+            
+            # Step 3: Get and display all policies
+            $policies = Get-CloudPCProvisioningPolicies
+            if (-not $policies) {
+                Write-Host "Cannot proceed without provisioning policies" -ForegroundColor Red
+                Read-Host "`nPress Enter to continue"
+                continue
+            }
+            
+            Show-ProvisioningPolicies -Policies $policies
+            
+            # Step 4: If we found current policy, get user's group memberships for removal
+            $sourceGroupsToRemoveFrom = @()
+            $sourcePolicyName = ""
+            
+            if ($currentPolicy) {
+                $sourcePolicyName = $currentPolicy.PolicyName
+                Write-Host "`nChecking which groups to remove user from in current policy..." -ForegroundColor Yellow
+                $sourceGroupsToRemoveFrom = Get-UserGroupsForPolicy -UserPrincipalName $userPrincipalName -PolicyId $currentPolicy.PolicyId -AllPolicies $policies
+                
+                if ($sourceGroupsToRemoveFrom.Count -gt 0) {
+                    Write-Host "User will be removed from these groups:" -ForegroundColor Yellow
+                    foreach ($group in $sourceGroupsToRemoveFrom) {
+                        Write-Host "  - $($group.GroupName)" -ForegroundColor White
+                    }
+                } else {
+                    Write-Host "No group memberships found to remove (user may have been manually assigned)" -ForegroundColor Yellow
+                }
+            }
+            
+            # Step 5: Select target policy (required)
+            Write-Host "`nSelect target (recovery) provisioning policy:" -ForegroundColor Green
+            $targetChoice = Read-Host "Enter policy number (1-$($policies.Count))"
+            
+            if (-not $targetChoice -or [int]$targetChoice -lt 1 -or [int]$targetChoice -gt $policies.Count) {
+                Write-Host "Invalid target policy selection" -ForegroundColor Red
+                Read-Host "`nPress Enter to continue"
+                continue
+            }
+            
+            $targetPolicy = $policies[[int]$targetChoice - 1]
+            $targetPolicyName = $targetPolicy.DisplayName
+            $targetGroupId = $null
+            
+            if ($targetPolicy.AssignedGroups.Count -eq 1) {
+                $targetGroupId = $targetPolicy.AssignedGroups[0].GroupId
+            } elseif ($targetPolicy.AssignedGroups.Count -gt 1) {
+                Write-Host "Multiple groups found for target policy. Select group:" -ForegroundColor Yellow
+                for ($i = 0; $i -lt $targetPolicy.AssignedGroups.Count; $i++) {
+                    Write-Host "  [$($i + 1)] $($targetPolicy.AssignedGroups[$i].GroupName)"
+                }
+                $groupChoice = Read-Host "Enter group number"
+                if ($groupChoice -and [int]$groupChoice -ge 1 -and [int]$groupChoice -le $targetPolicy.AssignedGroups.Count) {
+                    $targetGroupId = $targetPolicy.AssignedGroups[[int]$groupChoice - 1].GroupId
+                }
+            } else {
+                Write-Host "No groups assigned to target policy" -ForegroundColor Red
+                Read-Host "`nPress Enter to continue"
+                continue
+            }
+            
+            if (-not $targetGroupId) {
+                Write-Host "Target group selection is required" -ForegroundColor Red
+                Read-Host "`nPress Enter to continue"
+                continue
+            }
+            
+            # Step 6: Execute the migration
+            Write-Host "`nExecuting policy migration..." -ForegroundColor Yellow
+            
+            # Get user object once
+            try {
+                $user = Get-MgUser -Filter "userPrincipalName eq '$userPrincipalName'" -ErrorAction Stop
+            }
+            catch {
+                Write-Host "Error finding user: $($_.Exception.Message)" -ForegroundColor Red
+                Read-Host "`nPress Enter to continue"
+                continue
+            }
+            
+            # Remove from source groups
+            foreach ($sourceGroup in $sourceGroupsToRemoveFrom) {
+                try {
+                    Write-Host "Removing user from: $($sourceGroup.GroupName)..." -ForegroundColor Yellow
+                    Remove-MgGroupMember -GroupId $sourceGroup.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                    Write-Host "  Successfully removed from $($sourceGroup.GroupName)" -ForegroundColor Green
+                }
+                catch {
+                    if ($_.Exception.Message -like "*does not exist*") {
+                        Write-Host "  User was not a member of $($sourceGroup.GroupName)" -ForegroundColor Yellow
+                    } else {
+                        Write-Host "  Warning: Could not remove user from $($sourceGroup.GroupName): $($_.Exception.Message)" -ForegroundColor Yellow
+                    }
+                }
+            }
+            
+            # Add to target group
+            try {
+                Write-Host "Adding user to target group..." -ForegroundColor Yellow
+                New-MgGroupMember -GroupId $targetGroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                Write-Host "Successfully added user to target policy group" -ForegroundColor Green
+            }
+            catch {
+                if ($_.Exception.Message -like "*already exists*") {
+                    Write-Host "User is already a member of the target group" -ForegroundColor Yellow
+                } else {
+                    Write-Host "Error adding user to target group: $($_.Exception.Message)" -ForegroundColor Red
+                    Read-Host "`nPress Enter to continue"
+                    continue
+                }
+            }
+            
+            # Step 7: Check current Cloud PC status
+            Write-Host "`nChecking current Cloud PC status..." -ForegroundColor Yellow
+            $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
+            
+            if ($cloudPCs) {
+                Show-CloudPCStatus -CloudPCs $cloudPCs
+                
+                # Step 8: Handle grace period
+                $gracePeriodPCs = $cloudPCs | Where-Object { $_.IsInGracePeriod }
+                if ($gracePeriodPCs) {
+                    Write-Host "`nFound Cloud PCs in grace period." -ForegroundColor Yellow
+                    $endGrace = Read-Host "Do you want to end the grace period to start reprovisioning with '$targetPolicyName'? (y/n)"
+                    
+                    if ($endGrace -eq 'y' -or $endGrace -eq 'Y') {
+                        foreach ($pc in $gracePeriodPCs) {
+                            End-CloudPCGracePeriod -CloudPCId $pc.Id
+                        }
+                        Write-Host "Grace period ended. New provisioning should begin shortly." -ForegroundColor Green
+                    }
+                } else {
+                    Write-Host "No Cloud PCs in grace period. New provisioning may begin automatically." -ForegroundColor Green
+                }
+            }
+            
+            # Step 9: Monitor new provisioning
+            Write-Host "`nWould you like to monitor the new Cloud PC provisioning?" -ForegroundColor Yellow
+            $monitor = Read-Host "Monitor provisioning? (y/n)"
+            
+            if ($monitor -eq 'y' -or $monitor -eq 'Y') {
+                $timeoutMinutes = Read-Host "Enter timeout in minutes (default: 30)"
+                if (-not $timeoutMinutes -or -not [int]::TryParse($timeoutMinutes, [ref]$null)) {
+                    $timeoutMinutes = 30
+                }
+                
+                Write-Host "`nMonitoring for new Cloud PC provisioning using '$targetPolicyName' policy..." -ForegroundColor Green
+                Wait-ForProvisioning -UserPrincipalName $userPrincipalName -TimeoutMinutes ([int]$timeoutMinutes)
+            }
+            
+            Write-Host "`nRecovery workflow completed!" -ForegroundColor Green
+            Write-Host "User has been moved to '$targetPolicyName' provisioning policy" -ForegroundColor Green
+            Read-Host "`nPress Enter to continue"
+        }
+        
+        "7" {
+            Write-Host "`nDisconnecting from Microsoft Graph..." -ForegroundColor Yellow
+            Disconnect-MgGraph
+            Write-Host "Goodbye!" -ForegroundColor Green
+            exit
+        }
+        
+        default {
+            Write-Host "Invalid option. Please select 1-7." -ForegroundColor Red
+            Start-Sleep -Seconds 2
+        }
+    }
+    
+} while ($choice -ne "7") else {
             # Interactive authentication
             Connect-MgGraph -Scopes "DeviceManagementConfiguration.ReadWrite.All", "Group.ReadWrite.All", "Directory.Read.All", "CloudPC.ReadWrite.All" -NoWelcome
             $Global:AuthenticationMethod = "Interactive"
@@ -88,10 +336,12 @@ function Get-CloudPCProvisioningPolicies {
                 DisplayName = $policy.displayName
                 Description = $policy.description
                 ImageDisplayName = $policy.imageDisplayName
-                DomainJoinType = $policy.domainJoinType
+                DomainJoinType = if ($policy.domainJoinConfigurations -and $policy.domainJoinConfigurations.Count -gt 0) { $policy.domainJoinConfigurations[0].domainJoinType } else { "Not specified" }
                 Type = $policy.type
-                RegionName = $policy.regionName
-                OnPremisesConnectionId = $policy.onPremisesConnectionId
+                RegionName = if ($policy.domainJoinConfigurations -and $policy.domainJoinConfigurations.Count -gt 0) { $policy.domainJoinConfigurations[0].regionName } else { "Not specified" }
+                OnPremisesConnectionId = if ($policy.domainJoinConfigurations -and $policy.domainJoinConfigurations.Count -gt 0) { $policy.domainJoinConfigurations[0].onPremisesConnectionId } else { "Not specified" }
+                ProvisioningType = $policy.provisioningType
+                ImageType = $policy.imageType
                 AssignedGroups = @()
             }
             
@@ -216,71 +466,98 @@ function Show-ProvisioningPolicies {
     }
 }
 
-# Function to move user between groups with policy context
-function Move-UserBetweenPolicyGroups {
-    param(
-        [string]$UserPrincipalName,
-        [string]$SourcePolicyName,
-        [string]$SourceGroupId,
-        [string]$TargetPolicyName, 
-        [string]$TargetGroupId
-    )
+# Function to get user's current provisioning policy
+function Get-UserCurrentProvisioningPolicy {
+    param([string]$UserPrincipalName)
     
     try {
-        # Get user object
-        Write-Host "Looking up user: $UserPrincipalName..." -ForegroundColor Yellow
-        $user = Get-MgUser -Filter "userPrincipalName eq '$UserPrincipalName'" -ErrorAction Stop
+        Write-Host "Checking user's current Cloud PC and provisioning policy..." -ForegroundColor Yellow
         
-        if (-not $user) {
-            Write-Host "User not found: $UserPrincipalName" -ForegroundColor Red
-            return $false
+        # Get Cloud PCs for the user
+        $uri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/cloudPCs?`$filter=userPrincipalName eq '$UserPrincipalName'"
+        $cloudPCs = Invoke-MgGraphRequest -Uri $uri -Method GET
+        
+        if ($cloudPCs.value.Count -eq 0) {
+            Write-Host "No Cloud PCs found for user: $UserPrincipalName" -ForegroundColor Yellow
+            return $null
         }
         
-        Write-Host "Found user: $($user.DisplayName) ($($user.Id))" -ForegroundColor Green
+        # Get the most recent Cloud PC (in case there are multiple)
+        $latestCloudPC = $cloudPCs.value | Sort-Object lastModifiedDateTime -Descending | Select-Object -First 1
         
-        # Show the policy migration context
-        if ($SourcePolicyName -and $SourceGroupId) {
-            Write-Host "Moving FROM: $SourcePolicyName (Group ID: $SourceGroupId)" -ForegroundColor Cyan
-        }
-        Write-Host "Moving TO: $TargetPolicyName (Group ID: $TargetGroupId)" -ForegroundColor Cyan
-        
-        # Remove from source group if specified
-        if ($SourceGroupId) {
-            Write-Host "Removing user from source provisioning policy group..." -ForegroundColor Yellow
+        if ($latestCloudPC.provisioningPolicyId) {
             try {
-                Remove-MgGroupMember -GroupId $SourceGroupId -DirectoryObjectId $user.Id -ErrorAction Stop
-                Write-Host "Successfully removed user from source group" -ForegroundColor Green
-            }
-            catch {
-                if ($_.Exception.Message -like "*does not exist*") {
-                    Write-Host "User was not a member of the source group" -ForegroundColor Yellow
-                } else {
-                    Write-Host "Warning: Could not remove user from source group: $($_.Exception.Message)" -ForegroundColor Yellow
+                # Get the full provisioning policy details
+                $policyUri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/provisioningPolicies/$($latestCloudPC.provisioningPolicyId)"
+                $policy = Invoke-MgGraphRequest -Uri $policyUri -Method GET
+                
+                Write-Host "Found current provisioning policy: $($policy.displayName)" -ForegroundColor Green
+                
+                return [PSCustomObject]@{
+                    PolicyId = $policy.id
+                    PolicyName = $policy.displayName
+                    CloudPCId = $latestCloudPC.id
+                    CloudPCName = $latestCloudPC.displayName
+                    CloudPCStatus = $latestCloudPC.status
                 }
             }
-        }
-        
-        # Add to target group
-        Write-Host "Adding user to target provisioning policy group..." -ForegroundColor Yellow
-        try {
-            New-MgGroupMember -GroupId $TargetGroupId -DirectoryObjectId $user.Id -ErrorAction Stop
-            Write-Host "Successfully added user to target group" -ForegroundColor Green
-            return $true
-        }
-        catch {
-            if ($_.Exception.Message -like "*already exists*") {
-                Write-Host "User is already a member of the target group" -ForegroundColor Yellow
-                return $true
-            } else {
-                Write-Host "Error adding user to target group: $($_.Exception.Message)" -ForegroundColor Red
-                return $false
+            catch {
+                Write-Host "Warning: Could not retrieve policy details for ID: $($latestCloudPC.provisioningPolicyId)" -ForegroundColor Yellow
+                return [PSCustomObject]@{
+                    PolicyId = $latestCloudPC.provisioningPolicyId
+                    PolicyName = "Unknown (ID: $($latestCloudPC.provisioningPolicyId))"
+                    CloudPCId = $latestCloudPC.id
+                    CloudPCName = $latestCloudPC.displayName
+                    CloudPCStatus = $latestCloudPC.status
+                }
             }
+        } else {
+            Write-Host "Cloud PC found but no provisioning policy ID available" -ForegroundColor Yellow
+            return $null
         }
     }
     catch {
-        Write-Host "Error processing user move: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
+        Write-Host "Error getting user's current provisioning policy: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
     }
+}
+
+# Function to find which groups user needs to be removed from
+function Get-UserGroupsForPolicy {
+    param(
+        [string]$UserPrincipalName,
+        [string]$PolicyId,
+        [array]$AllPolicies
+    )
+    
+    $policy = $AllPolicies | Where-Object { $_.Id -eq $PolicyId }
+    if (-not $policy) {
+        return @()
+    }
+    
+    $userGroups = @()
+    foreach ($group in $policy.AssignedGroups) {
+        if ($group.GroupId -eq "AllLicensedUsers" -or $group.GroupId -eq "AllDevices") {
+            # Skip built-in assignment types as we can't remove users from these
+            continue
+        }
+        
+        try {
+            # Check if user is member of this group
+            $user = Get-MgUser -Filter "userPrincipalName eq '$UserPrincipalName'" -ErrorAction Stop
+            $membership = Get-MgGroupMember -GroupId $group.GroupId -All | Where-Object { $_.Id -eq $user.Id }
+            
+            if ($membership) {
+                $userGroups += $group
+                Write-Host "  User is member of: $($group.GroupName)" -ForegroundColor Gray
+            }
+        }
+        catch {
+            Write-Host "  Warning: Could not check membership for group: $($group.GroupName)" -ForegroundColor Yellow
+        }
+    }
+    
+    return $userGroups
 }
 
 # Function to get user's Cloud PC status
@@ -433,7 +710,7 @@ function Show-MainMenu {
     Write-Host "`nMain Menu:" -ForegroundColor Cyan
     Write-Host "==========" -ForegroundColor Cyan
     Write-Host "1. View all Provisioning Policies and Group Assignments"
-    Write-Host "2. Move User Between Provisioning Policies"
+    Write-Host "2. Move User Between Provisioning Policies (Auto-Discovery)"
     Write-Host "3. Check User Cloud PC Status"
     Write-Host "4. End Grace Period for Cloud PC"
     Write-Host "5. Monitor New Cloud PC Provisioning"
@@ -473,8 +750,8 @@ do {
         }
         
         "2" {
-            Write-Host "`nMove User Between Provisioning Policies" -ForegroundColor Cyan
-            Write-Host "=======================================" -ForegroundColor Cyan
+            Write-Host "`nMove User Between Provisioning Policies (Auto-Discovery)" -ForegroundColor Cyan
+            Write-Host "=========================================================" -ForegroundColor Cyan
             
             # Step 1: Get user
             $userPrincipalName = Read-Host "Enter user's email address (UPN)"
@@ -484,7 +761,25 @@ do {
                 continue
             }
             
-            # Step 2: Get and display policies
+            # Step 2: Get user's current provisioning policy
+            Write-Host "`nDiscovering user's current provisioning policy..." -ForegroundColor Yellow
+            $currentPolicy = Get-UserCurrentProvisioningPolicy -UserPrincipalName $userPrincipalName
+            
+            if (-not $currentPolicy) {
+                Write-Host "Could not determine user's current provisioning policy. User may not have a Cloud PC yet." -ForegroundColor Yellow
+                $proceedWithoutCurrent = Read-Host "Do you want to proceed without knowing the current policy? (y/n)"
+                if ($proceedWithoutCurrent -ne 'y' -and $proceedWithoutCurrent -ne 'Y') {
+                    Read-Host "`nPress Enter to continue"
+                    continue
+                }
+            } else {
+                Write-Host "`nCurrent Policy Information:" -ForegroundColor Cyan
+                Write-Host "  Policy: $($currentPolicy.PolicyName)" -ForegroundColor White
+                Write-Host "  Cloud PC: $($currentPolicy.CloudPCName)" -ForegroundColor White
+                Write-Host "  Status: $($currentPolicy.CloudPCStatus)" -ForegroundColor White
+            }
+            
+            # Step 3: Get and display all policies
             $policies = Get-CloudPCProvisioningPolicies
             if (-not $policies) {
                 Write-Host "Cannot proceed without provisioning policies" -ForegroundColor Red
@@ -494,150 +789,27 @@ do {
             
             Show-ProvisioningPolicies -Policies $policies
             
-            # Step 3: Select source policy (optional)
-            Write-Host "`nSelect source provisioning policy (or press Enter to skip removal):" -ForegroundColor Yellow
-            $sourceChoice = Read-Host "Enter policy number (1-$($policies.Count))"
-            
-            $sourceGroupId = $null
+            # Step 4: If we found current policy, get user's group memberships for removal
+            $sourceGroupsToRemoveFrom = @()
             $sourcePolicyName = ""
-            if ($sourceChoice -and [int]$sourceChoice -ge 1 -and [int]$sourceChoice -le $policies.Count) {
-                $sourcePolicy = $policies[[int]$sourceChoice - 1]
-                $sourcePolicyName = $sourcePolicy.DisplayName
+            
+            if ($currentPolicy) {
+                $sourcePolicyName = $currentPolicy.PolicyName
+                Write-Host "`nChecking which groups to remove user from in current policy..." -ForegroundColor Yellow
+                $sourceGroupsToRemoveFrom = Get-UserGroupsForPolicy -UserPrincipalName $userPrincipalName -PolicyId $currentPolicy.PolicyId -AllPolicies $policies
                 
-                if ($sourcePolicy.AssignedGroups.Count -eq 1) {
-                    $sourceGroupId = $sourcePolicy.AssignedGroups[0].GroupId
-                    Write-Host "Selected source group: $($sourcePolicy.AssignedGroups[0].GroupName)" -ForegroundColor Green
-                } elseif ($sourcePolicy.AssignedGroups.Count -gt 1) {
-                    Write-Host "Multiple groups found for source policy. Select group:" -ForegroundColor Yellow
-                    for ($i = 0; $i -lt $sourcePolicy.AssignedGroups.Count; $i++) {
-                        Write-Host "  [$($i + 1)] $($sourcePolicy.AssignedGroups[$i].GroupName)"
-                    }
-                    $groupChoice = Read-Host "Enter group number"
-                    if ($groupChoice -and [int]$groupChoice -ge 1 -and [int]$groupChoice -le $sourcePolicy.AssignedGroups.Count) {
-                        $sourceGroupId = $sourcePolicy.AssignedGroups[[int]$groupChoice - 1].GroupId
-                    }
-                }
-            }
-            
-            # Step 4: Select target/recovery policy (required)
-            Write-Host "`nSelect target (recovery) provisioning policy:" -ForegroundColor Green
-            $targetChoice = Read-Host "Enter policy number (1-$($policies.Count))"
-            
-            if (-not $targetChoice -or [int]$targetChoice -lt 1 -or [int]$targetChoice -gt $policies.Count) {
-                Write-Host "Invalid target policy selection" -ForegroundColor Red
-                Read-Host "`nPress Enter to continue"
-                continue
-            }
-            
-            $targetPolicy = $policies[[int]$targetChoice - 1]
-            $targetPolicyName = $targetPolicy.DisplayName
-            $targetGroupId = $null
-            
-            if ($targetPolicy.AssignedGroups.Count -eq 1) {
-                $targetGroupId = $targetPolicy.AssignedGroups[0].GroupId
-            } elseif ($targetPolicy.AssignedGroups.Count -gt 1) {
-                Write-Host "Multiple groups found for target policy. Select group:" -ForegroundColor Yellow
-                for ($i = 0; $i -lt $targetPolicy.AssignedGroups.Count; $i++) {
-                    Write-Host "  [$($i + 1)] $($targetPolicy.AssignedGroups[$i].GroupName)"
-                }
-                $groupChoice = Read-Host "Enter group number"
-                if ($groupChoice -and [int]$groupChoice -ge 1 -and [int]$groupChoice -le $targetPolicy.AssignedGroups.Count) {
-                    $targetGroupId = $targetPolicy.AssignedGroups[[int]$groupChoice - 1].GroupId
-                }
-            } else {
-                Write-Host "No groups assigned to target policy" -ForegroundColor Red
-                Read-Host "`nPress Enter to continue"
-                continue
-            }
-            
-            if (-not $targetGroupId) {
-                Write-Host "Target group selection is required" -ForegroundColor Red
-                Read-Host "`nPress Enter to continue"
-                continue
-            }
-            
-            # Step 5: Move user between policy groups
-            Write-Host "`nMoving user between provisioning policies..." -ForegroundColor Yellow
-            $moveResult = Move-UserBetweenPolicyGroups -UserPrincipalName $userPrincipalName -SourcePolicyName $sourcePolicyName -SourceGroupId $sourceGroupId -TargetPolicyName $targetPolicyName -TargetGroupId $targetGroupId
-            
-            if (-not $moveResult) {
-                Write-Host "Failed to move user. Recovery workflow stopped." -ForegroundColor Red
-                Read-Host "`nPress Enter to continue"
-                continue
-            }
-            
-            # Step 6: Check current Cloud PC status
-            Write-Host "`nChecking current Cloud PC status..." -ForegroundColor Yellow
-            $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
-            
-            if ($cloudPCs) {
-                Show-CloudPCStatus -CloudPCs $cloudPCs
-                
-                # Step 7: Handle grace period
-                $gracePeriodPCs = $cloudPCs | Where-Object { $_.IsInGracePeriod }
-                if ($gracePeriodPCs) {
-                    Write-Host "`nFound Cloud PCs in grace period." -ForegroundColor Yellow
-                    $endGrace = Read-Host "Do you want to end the grace period to start reprovisioning with '$targetPolicyName'? (y/n)"
-                    
-                    if ($endGrace -eq 'y' -or $endGrace -eq 'Y') {
-                        foreach ($pc in $gracePeriodPCs) {
-                            End-CloudPCGracePeriod -CloudPCId $pc.Id
-                        }
-                        Write-Host "Grace period ended. New provisioning should begin shortly." -ForegroundColor Green
+                if ($sourceGroupsToRemoveFrom.Count -gt 0) {
+                    Write-Host "User will be removed from these groups:" -ForegroundColor Yellow
+                    foreach ($group in $sourceGroupsToRemoveFrom) {
+                        Write-Host "  - $($group.GroupName)" -ForegroundColor White
                     }
                 } else {
-                    Write-Host "No Cloud PCs in grace period. New provisioning may begin automatically." -ForegroundColor Green
+                    Write-Host "No group memberships found to remove (user may have been manually assigned)" -ForegroundColor Yellow
                 }
             }
             
-            # Step 8: Monitor new provisioning
-            Write-Host "`nWould you like to monitor the new Cloud PC provisioning?" -ForegroundColor Yellow
-            $monitor = Read-Host "Monitor provisioning? (y/n)"
-            
-            if ($monitor -eq 'y' -or $monitor -eq 'Y') {
-                $timeoutMinutes = Read-Host "Enter timeout in minutes (default: 30)"
-                if (-not $timeoutMinutes -or -not [int]::TryParse($timeoutMinutes, [ref]$null)) {
-                    $timeoutMinutes = 30
-                }
-                
-                Write-Host "`nMonitoring for new Cloud PC provisioning using '$targetPolicyName' policy..." -ForegroundColor Green
-                Wait-ForProvisioning -UserPrincipalName $userPrincipalName -TimeoutMinutes ([int]$timeoutMinutes)
-            }
-            
-            Write-Host "`nRecovery workflow completed!" -ForegroundColor Green
-            Write-Host "User has been moved to '$targetPolicyName' provisioning policy" -ForegroundColor Green
-            Read-Host "`nPress Enter to continue"
-        }
-        
-        "7" {
-            Write-Host "`nDisconnecting from Microsoft Graph..." -ForegroundColor Yellow
-            Disconnect-MgGraph
-            Write-Host "Goodbye!" -ForegroundColor Green
-            exit
-        }
-        
-        default {
-            Write-Host "Invalid option. Please select 1-7." -ForegroundColor Red
-            Start-Sleep -Seconds 2
-        }
-    }
-    
-} while ($choice -ne "7"):" -ForegroundColor Yellow
-                    for ($i = 0; $i -lt $sourcePolicy.AssignedGroups.Count; $i++) {
-                        Write-Host "  [$($i + 1)] $($sourcePolicy.AssignedGroups[$i].GroupName)"
-                    }
-                    $groupChoice = Read-Host "Enter group number"
-                    if ($groupChoice -and [int]$groupChoice -ge 1 -and [int]$groupChoice -le $sourcePolicy.AssignedGroups.Count) {
-                        $sourceGroupId = $sourcePolicy.AssignedGroups[[int]$groupChoice - 1].GroupId
-                        Write-Host "Selected source group: $($sourcePolicy.AssignedGroups[[int]$groupChoice - 1].GroupName)" -ForegroundColor Green
-                    }
-                } else {
-                    Write-Host "No groups assigned to source policy - will skip removal" -ForegroundColor Yellow
-                }
-            }
-            
-            # Step 4: Select target policy (required)
-            Write-Host "`nSelect target (recovery) provisioning policy:" -ForegroundColor Green
+            # Step 5: Select target policy (required)
+            Write-Host "`nSelect target (destination) provisioning policy:" -ForegroundColor Green
             $targetChoice = Read-Host "Enter policy number (1-$($policies.Count))"
             
             if (-not $targetChoice -or [int]$targetChoice -lt 1 -or [int]$targetChoice -gt $policies.Count) {
@@ -675,100 +847,56 @@ do {
                 continue
             }
             
-            # Step 5: Execute the move
-            $result = Move-UserBetweenPolicyGroups -UserPrincipalName $userPrincipalName -SourcePolicyName $sourcePolicyName -SourceGroupId $sourceGroupId -TargetPolicyName $targetPolicyName -TargetGroupId $targetGroupId
+            # Step 6: Execute the migration
+            Write-Host "`nExecuting policy migration..." -ForegroundColor Yellow
             
-            if ($result) {
-                Write-Host "`nUser successfully moved between provisioning policies!" -ForegroundColor Green
-            } else {
-                Write-Host "`nFailed to move user between policies" -ForegroundColor Red
+            # Get user object once
+            try {
+                $user = Get-MgUser -Filter "userPrincipalName eq '$userPrincipalName'" -ErrorAction Stop
+            }
+            catch {
+                Write-Host "Error finding user: $($_.Exception.Message)" -ForegroundColor Red
+                Read-Host "`nPress Enter to continue"
+                continue
             }
             
-            Read-Host "`nPress Enter to continue"
-        }
-        
-        "3" {
-            Write-Host "`nCheck User Cloud PC Status" -ForegroundColor Cyan
-            Write-Host "==========================" -ForegroundColor Cyan
-            
-            $userPrincipalName = Read-Host "Enter user's email address (UPN)"
-            $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
-            Show-CloudPCStatus -CloudPCs $cloudPCs
-            Read-Host "`nPress Enter to continue"
-        }
-        
-        "4" {
-            Write-Host "`nEnd Grace Period for Cloud PC" -ForegroundColor Cyan
-            Write-Host "=============================" -ForegroundColor Cyan
-            
-            $userPrincipalName = Read-Host "Enter user's email address (UPN)"
-            $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
-            
-            if ($cloudPCs) {
-                Show-CloudPCStatus -CloudPCs $cloudPCs
-                $gracePeriodPCs = $cloudPCs | Where-Object { $_.IsInGracePeriod }
-                
-                if ($gracePeriodPCs) {
-                    foreach ($pc in $gracePeriodPCs) {
-                        $confirm = Read-Host "`nEnd grace period for '$($pc.DisplayName)'? (y/n)"
-                        if ($confirm -eq 'y' -or $confirm -eq 'Y') {
-                            End-CloudPCGracePeriod -CloudPCId $pc.Id
-                        }
+            # Remove from source groups
+            $removalSuccess = $true
+            foreach ($sourceGroup in $sourceGroupsToRemoveFrom) {
+                try {
+                    Write-Host "Removing user from: $($sourceGroup.GroupName)..." -ForegroundColor Yellow
+                    Remove-MgGroupMember -GroupId $sourceGroup.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                    Write-Host "  Successfully removed from $($sourceGroup.GroupName)" -ForegroundColor Green
+                }
+                catch {
+                    if ($_.Exception.Message -like "*does not exist*") {
+                        Write-Host "  User was not a member of $($sourceGroup.GroupName)" -ForegroundColor Yellow
+                    } else {
+                        Write-Host "  Warning: Could not remove user from $($sourceGroup.GroupName): $($_.Exception.Message)" -ForegroundColor Yellow
+                        $removalSuccess = $false
                     }
-                } else {
-                    Write-Host "No Cloud PCs in grace period found" -ForegroundColor Yellow
                 }
             }
-            Read-Host "`nPress Enter to continue"
-        }
-        
-        "5" {
-            Write-Host "`nMonitor New Cloud PC Provisioning" -ForegroundColor Cyan
-            Write-Host "==================================" -ForegroundColor Cyan
             
-            $userPrincipalName = Read-Host "Enter user's email address (UPN)"
-            $timeoutMinutes = Read-Host "Enter timeout in minutes (default: 30)"
-            if (-not $timeoutMinutes -or -not [int]::TryParse($timeoutMinutes, [ref]$null)) {
-                $timeoutMinutes = 30
-            }
-            
-            Wait-ForProvisioning -UserPrincipalName $userPrincipalName -TimeoutMinutes ([int]$timeoutMinutes)
-            Read-Host "`nPress Enter to continue"
-        }
-        
-        "6" {
-            Write-Host "`nComplete Recovery Workflow" -ForegroundColor Cyan
-            Write-Host "===========================" -ForegroundColor Cyan
-            
-            # Step 1: Get user
-            $userPrincipalName = Read-Host "Enter user's email address (UPN)"
-            if (-not $userPrincipalName) {
-                Write-Host "Invalid user principal name" -ForegroundColor Red
-                Read-Host "`nPress Enter to continue"
-                continue
-            }
-            
-            # Step 2: Get and display policies
-            $policies = Get-CloudPCProvisioningPolicies
-            if (-not $policies) {
-                Write-Host "Cannot proceed without provisioning policies" -ForegroundColor Red
-                Read-Host "`nPress Enter to continue"
-                continue
-            }
-            
-            Show-ProvisioningPolicies -Policies $policies
-            
-            # Step 3: Select source policy (optional)
-            Write-Host "`nSelect source provisioning policy (or press Enter to skip removal):" -ForegroundColor Yellow
-            $sourceChoice = Read-Host "Enter policy number (1-$($policies.Count))"
-            
-            $sourceGroupId = $null
-            $sourcePolicyName = ""
-            if ($sourceChoice -and [int]$sourceChoice -ge 1 -and [int]$sourceChoice -le $policies.Count) {
-                $sourcePolicy = $policies[[int]$sourceChoice - 1]
-                $sourcePolicyName = $sourcePolicy.DisplayName
+            # Add to target group
+            try {
+                Write-Host "Adding user to target group..." -ForegroundColor Yellow
+                New-MgGroupMember -GroupId $targetGroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                Write-Host "Successfully added user to target policy group" -ForegroundColor Green
                 
-                if ($sourcePolicy.AssignedGroups.Count -eq 1) {
-                    $sourceGroupId = $sourcePolicy.AssignedGroups[0].GroupId
-                } elseif ($sourcePolicy.AssignedGroups.Count -gt 1) {
-                    Write-Host "Multiple groups found for source policy. Select group
+                Write-Host "`nPolicy migration completed successfully!" -ForegroundColor Green
+                if ($sourcePolicyName) {
+                    Write-Host "FROM: $sourcePolicyName" -ForegroundColor Cyan
+                }
+                Write-Host "TO: $targetPolicyName" -ForegroundColor Cyan
+            }
+            catch {
+                if ($_.Exception.Message -like "*already exists*") {
+                    Write-Host "User is already a member of the target group" -ForegroundColor Yellow
+                    Write-Host "`nPolicy migration completed!" -ForegroundColor Green
+                } else {
+                    Write-Host "Error adding user to target group: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            
+            Read-Host "`nPress Enter to continue"
