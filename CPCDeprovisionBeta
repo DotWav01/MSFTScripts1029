@@ -1,4 +1,4 @@
-# Cloud PC Recovery & Reprovisioning Tool -v21
+# Cloud PC Recovery & Reprovisioning Tool -v22
 # Requires Microsoft.Graph PowerShell Module
 
 param(
@@ -42,11 +42,8 @@ function Connect-ToMicrosoftGraph {
         Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
         
         if ($TenantId -and $ClientId -and $ClientSecret) {
-            # App-only authentication
-            $secureSecret = ConvertTo-SecureString $ClientSecret -AsPlainText -Force
-            $credential = New-Object System.Management.Automation.PSCredential($ClientId, $secureSecret)
-            Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $credential -NoWelcome
-            $Global:AuthenticationMethod = "App-only"
+            
+            Read-Host "`nPress Enter to continue"
         }
         
         "3" {
@@ -295,9 +292,20 @@ function Connect-ToMicrosoftGraph {
         }
     }
     
-} while ($choice -ne "7") else {
+} while ($choice -ne "7")# App-only authentication
+            $secureSecret = ConvertTo-SecureString $ClientSecret -AsPlainText -Force
+            $credential = New-Object System.Management.Automation.PSCredential($ClientId, $secureSecret)
+            Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $credential -NoWelcome
+            $Global:AuthenticationMethod = "App-only"
+        } else {
             # Interactive authentication
-            Connect-MgGraph -Scopes "DeviceManagementConfiguration.ReadWrite.All", "Group.ReadWrite.All", "Directory.Read.All", "CloudPC.ReadWrite.All" -NoWelcome
+            $scopes = @(
+                "DeviceManagementConfiguration.ReadWrite.All",
+                "Group.ReadWrite.All", 
+                "Directory.Read.All",
+                "CloudPC.ReadWrite.All"
+            )
+            Connect-MgGraph -Scopes $scopes -NoWelcome
             $Global:AuthenticationMethod = "Interactive"
         }
         
@@ -345,7 +353,7 @@ function Get-CloudPCProvisioningPolicies {
                 AssignedGroups = @()
             }
             
-            # Get assignments using the correct $expand approach
+            # Get assignments using the correct expand approach
             try {
                 Write-Host "    Retrieving assignments using expand parameter..." -ForegroundColor Gray
                 $expandUri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/provisioningPolicies/$($policy.id)?`$expand=assignments"
@@ -861,7 +869,6 @@ do {
             }
             
             # Remove from source groups
-            $removalSuccess = $true
             foreach ($sourceGroup in $sourceGroupsToRemoveFrom) {
                 try {
                     Write-Host "Removing user from: $($sourceGroup.GroupName)..." -ForegroundColor Yellow
@@ -873,7 +880,6 @@ do {
                         Write-Host "  User was not a member of $($sourceGroup.GroupName)" -ForegroundColor Yellow
                     } else {
                         Write-Host "  Warning: Could not remove user from $($sourceGroup.GroupName): $($_.Exception.Message)" -ForegroundColor Yellow
-                        $removalSuccess = $false
                     }
                 }
             }
@@ -898,5 +904,3 @@ do {
                     Write-Host "Error adding user to target group: $($_.Exception.Message)" -ForegroundColor Red
                 }
             }
-            
-            Read-Host "`nPress Enter to continue"
