@@ -105,10 +105,14 @@ function Get-CloudPCProvisioningPolicies {
                     Write-Host "    Found $($policyDetails.assignments.Count) assignment(s)" -ForegroundColor Gray
                     
                     foreach ($assignment in $policyDetails.assignments) {
-                        if ($assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget') {
+                        Write-Host "      Processing assignment with target type: $($assignment.target.'@odata.type')" -ForegroundColor Gray
+                        
+                        if ($assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget' -or 
+                            $assignment.target.'@odata.type' -eq '#microsoft.graph.cloudPcManagementGroupAssignmentTarget') {
                             try {
-                                Write-Host "      Getting group details for: $($assignment.target.groupId)" -ForegroundColor Gray
-                                $group = Get-MgGroup -GroupId $assignment.target.groupId -ErrorAction Stop
+                                $groupId = $assignment.target.groupId
+                                Write-Host "      Getting group details for: $groupId" -ForegroundColor Gray
+                                $group = Get-MgGroup -GroupId $groupId -ErrorAction Stop
                                 
                                 if ($group) {
                                     $policyInfo.AssignedGroups += [PSCustomObject]@{
@@ -116,7 +120,7 @@ function Get-CloudPCProvisioningPolicies {
                                         GroupName = $group.DisplayName
                                         GroupType = if ($group.GroupTypes -contains "DynamicMembership") { "Dynamic" } else { "Static" }
                                     }
-                                    Write-Host "      Added group: $($group.DisplayName)" -ForegroundColor Gray
+                                    Write-Host "      Successfully added group: $($group.DisplayName)" -ForegroundColor Green
                                 }
                             }
                             catch {
@@ -134,7 +138,7 @@ function Get-CloudPCProvisioningPolicies {
                                 GroupName = "All Licensed Users"
                                 GroupType = "Built-in"
                             }
-                            Write-Host "      Added assignment: All Licensed Users" -ForegroundColor Gray
+                            Write-Host "      Added assignment: All Licensed Users" -ForegroundColor Green
                         }
                         elseif ($assignment.target.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget') {
                             $policyInfo.AssignedGroups += [PSCustomObject]@{
@@ -142,7 +146,16 @@ function Get-CloudPCProvisioningPolicies {
                                 GroupName = "All Devices"
                                 GroupType = "Built-in"
                             }
-                            Write-Host "      Added assignment: All Devices" -ForegroundColor Gray
+                            Write-Host "      Added assignment: All Devices" -ForegroundColor Green
+                        }
+                        else {
+                            Write-Host "      Unknown assignment target type: $($assignment.target.'@odata.type')" -ForegroundColor Yellow
+                            # Add it anyway so we can see what it is
+                            $policyInfo.AssignedGroups += [PSCustomObject]@{
+                                GroupId = if ($assignment.target.groupId) { $assignment.target.groupId } else { "Unknown" }
+                                GroupName = "Unknown target type: $($assignment.target.'@odata.type')"
+                                GroupType = "Unknown"
+                            }
                         }
                     }
                 } else {
