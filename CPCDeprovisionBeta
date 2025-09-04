@@ -1,4 +1,4 @@
-# Cloud PC Recovery & Reprovisioning Tool -V20
+# Cloud PC Recovery & Reprovisioning Tool
 # Requires Microsoft.Graph PowerShell Module
 
 param(
