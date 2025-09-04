@@ -1,4 +1,3 @@
-
 # Cloud PC Recovery & Reprovisioning Tool
 # Requires Microsoft.Graph PowerShell Module
 
@@ -893,7 +892,7 @@ do {
             foreach ($sourceGroup in $sourceGroupsToRemoveFrom) {
                 try {
                     Write-Host "Removing user from: $($sourceGroup.GroupName)..." -ForegroundColor Yellow
-                    Remove-MgGroupMember -GroupId $sourceGroup.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                    Remove-MgGroupMemberByRef -GroupId $sourceGroup.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
                     Write-Host "  Successfully removed from $($sourceGroup.GroupName)" -ForegroundColor Green
                 }
                 catch {
