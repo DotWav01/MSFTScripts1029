@@ -1,4 +1,3 @@
-
 # Cloud PC Recovery & Reprovisioning Tool
 # Requires Microsoft.Graph PowerShell Module
 
@@ -965,12 +964,12 @@ do {
         }
         
         default {
-            Write-Host "Invalid option. Please select 1-8." -ForegroundColor Red
+            Write-Host "Invalid option. Please select 1-9." -ForegroundColor Red
             Start-Sleep -Seconds 2
         }
     }
     
-} while ($choice -ne "8") Enter to continue"
+} while ($choice -ne "9") Enter to continue"
                 continue
             }
             
