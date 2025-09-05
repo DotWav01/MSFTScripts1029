@@ -705,6 +705,8 @@ function Invoke-CloudPCDeprovision {
         Write-Output-Safe "`nChecking group memberships for current policy..." -ForegroundColor Yellow
         $groupsToRemoveFrom = Get-UserGroupsForPolicy -UserPrincipalName $UserPrincipalName -PolicyId $currentPolicy.PolicyId -AllPolicies $allPolicies
         
+        $groupsWereRemoved = $false
+        
         if ($groupsToRemoveFrom.Count -eq 0) {
             Write-Output-Safe "No group memberships found to remove" -ForegroundColor Yellow
             Write-Output-Safe "User may have been manually assigned or is part of 'All Licensed Users' assignment" -ForegroundColor Yellow
@@ -730,6 +732,7 @@ function Invoke-CloudPCDeprovision {
                     Write-Output-Safe "Removing user from: $($group.GroupName)..." -ForegroundColor Yellow
                     Remove-MgGroupMemberByRef -GroupId $group.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
                     Write-Output-Safe "  Successfully removed from $($group.GroupName)" -ForegroundColor Green
+                    $groupsWereRemoved = $true
                 }
                 catch {
                     if ($_.Exception.Message -like "*does not exist*") {
@@ -739,8 +742,10 @@ function Invoke-CloudPCDeprovision {
                     }
                 }
             }
-            
-            # Wait 5 minutes for Azure to process the group changes
+        }
+        
+        # Wait 5 minutes for Azure to process the group changes (only if groups were actually removed)
+        if ($groupsWereRemoved) {
             Write-Output-Safe "`nGroup removal completed. Now waiting for Azure to process the changes..." -ForegroundColor Green
             Wait-WithProgress -Minutes 5 -Message "Waiting for Azure to process group membership changes"
         }
@@ -785,8 +790,50 @@ function Invoke-CloudPCDeprovision {
                     }
                 }
             } else {
-                Write-Output-Safe "`nCloud PC is not yet in grace period. This may take additional time." -ForegroundColor Yellow
-                Write-Output-Safe "You can check again later or the Cloud PC will be automatically deprovisioned when Azure processes the change." -ForegroundColor Gray
+                # If no grace period found and groups were removed, offer to wait longer or check again
+                if ($groupsWereRemoved) {
+                    Write-Output-Safe "`nCloud PC is not yet in grace period after group removal and 5-minute wait." -ForegroundColor Yellow
+                    Write-Output-Safe "This may indicate:" -ForegroundColor Yellow
+                    Write-Output-Safe "- Azure needs more time to process the policy change" -ForegroundColor Yellow
+                    Write-Output-Safe "- The Cloud PC is already deprovisioned" -ForegroundColor Yellow
+                    Write-Output-Safe "- The user was assigned through 'All Licensed Users' (can't be removed)" -ForegroundColor Yellow
+                    
+                    if (-not $Global:SilentMode -and -not $AutoEndGracePeriod) {
+                        $waitLonger = Read-Host "`nWould you like to wait another 5 minutes and check again? (y/n)"
+                        if ($waitLonger -eq 'y' -or $waitLonger -eq 'Y') {
+                            Write-Output-Safe "Waiting an additional 5 minutes..." -ForegroundColor Yellow
+                            Wait-WithProgress -Minutes 5 -Message "Additional wait for Azure to process policy changes"
+                            
+                            # Check again after additional wait
+                            Write-Output-Safe "`nChecking Cloud PC status again..." -ForegroundColor Yellow
+                            $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $UserPrincipalName
+                            if ($cloudPCs) {
+                                Show-CloudPCStatus -CloudPCs $cloudPCs
+                                $gracePeriodPCs = $cloudPCs | Where-Object { $_.IsInGracePeriod }
+                                if ($gracePeriodPCs) {
+                                    Write-Output-Safe "`nNow found Cloud PCs in grace period!" -ForegroundColor Green
+                                    $endGrace = Read-Host "Do you want to end the grace period to complete deprovisioning? (y/n)"
+                                    if ($endGrace -eq 'y' -or $endGrace -eq 'Y') {
+                                        foreach ($pc in $gracePeriodPCs) {
+                                            $success = End-CloudPCGracePeriod -CloudPCId $pc.Id
+                                            if ($success) {
+                                                Write-Output-Safe "Grace period ended for: $($pc.DisplayName)" -ForegroundColor Green
+                                            }
+                                        }
+                                        Write-Output-Safe "`nCloud PC deprovisioning completed!" -ForegroundColor Green
+                                    }
+                                } else {
+                                    Write-Output-Safe "Cloud PC still not in grace period. You may need to check the policy assignments manually." -ForegroundColor Yellow
+                                }
+                            }
+                        }
+                    } else {
+                        Write-Output-Safe "You can check again later or the Cloud PC will be automatically deprovisioned when Azure processes the change." -ForegroundColor Gray
+                    }
+                } else {
+                    Write-Output-Safe "`nNo grace period found and no groups were removed." -ForegroundColor Yellow
+                    Write-Output-Safe "The Cloud PC may already be deprovisioned or not assigned through removable groups." -ForegroundColor Gray
+                }
             }
         }
         
@@ -1235,7 +1282,6 @@ function Wait-ForProvisioning {
     Write-Output-Safe "`nTimeout reached. Provisioning may still be in progress." -ForegroundColor Yellow
     return $null
 }
-
 # Cloud PC Recovery & Reprovisioning Tool - PART 3 OF 3
 
 # Main menu function (interactive mode only)
