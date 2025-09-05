@@ -603,7 +603,7 @@ function Invoke-CloudPCDeprovision {
             foreach ($group in $groupsToRemoveFrom) {
                 try {
                     Write-Output-Safe "Removing user from: $($group.GroupName)..." -ForegroundColor Yellow
-                    Remove-MgGroupMember -GroupId $group.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                    Remove-MgGroupMemberByRef -GroupId $group.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
                     Write-Output-Safe "  Successfully removed from $($group.GroupName)" -ForegroundColor Green
                 }
                 catch {
@@ -747,7 +747,7 @@ function Invoke-BulkCloudPCDeprovision {
             foreach ($group in $groupsToRemoveFrom) {
                 try {
                     Write-Output-Safe "  Removing from: $($group.GroupName)..." -ForegroundColor Yellow
-                    Remove-MgGroupMember -GroupId $group.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                    Remove-MgGroupMemberByRef -GroupId $group.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
                     Write-Output-Safe "    Successfully removed" -ForegroundColor Green
                     $removedGroups += $group.GroupName
                 }
@@ -931,7 +931,7 @@ function Move-UserBetweenPolicyGroups {
         if ($SourceGroupId) {
             Write-Output-Safe "Removing user from source provisioning policy group..." -ForegroundColor Yellow
             try {
-                Remove-MgGroupMember -GroupId $SourceGroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                Remove-MgGroupMemberByRef -GroupId $SourceGroupId -DirectoryObjectId $user.Id -ErrorAction Stop
                 Write-Output-Safe "Successfully removed user from source group" -ForegroundColor Green
             }
             catch {
@@ -1359,7 +1359,7 @@ function Invoke-AutomatedOperation {
             foreach ($sourceGroup in $sourceGroupsToRemoveFrom) {
                 try {
                     Write-Output-Safe "Removing user from: $($sourceGroup.GroupName)..." -ForegroundColor Yellow
-                    Remove-MgGroupMember -GroupId $sourceGroup.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
+                    Remove-MgGroupMemberByRef -GroupId $sourceGroup.GroupId -DirectoryObjectId $user.Id -ErrorAction Stop
                     Write-Output-Safe "  Successfully removed from $($sourceGroup.GroupName)" -ForegroundColor Green
                 }
                 catch {
