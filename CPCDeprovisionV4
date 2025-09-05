@@ -291,7 +291,7 @@ function Get-CloudPCProvisioningPolicies {
                                         GroupName = $group.DisplayName
                                         GroupType = if ($group.GroupTypes -contains "DynamicMembership") { "Dynamic" } else { "Static" }
                                     }
-                                    Write-Output-Safe "      Successfully added group: $($group.DisplayName)" -ForegroundColor Green
+                                    Write-Output-Safe "      Successfully Discovered Group Name: $($group.DisplayName)" -ForegroundColor Green
                                 }
                             }
                             catch {
