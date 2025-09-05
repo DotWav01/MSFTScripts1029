@@ -11,6 +11,12 @@
 # View all provisioning policies:
 # .\CloudPCTool.ps1 -Operation ViewPolicies
 #
+# View all Azure Network Connections:
+# .\CloudPCTool.ps1 -Operation ViewNetworkConnections
+#
+# Export network connections to CSV:
+# .\CloudPCTool.ps1 -Operation ViewNetworkConnections -Silent > network_connections.csv
+#
 # Check Cloud PC status for single user:
 # .\CloudPCTool.ps1 -Operation CheckStatus -UserPrincipalName user@domain.com
 #
@@ -76,9 +82,9 @@ param(
     [Parameter(Mandatory=$false)]
     [string]$ClientSecret,
     
-    # NEW: Automation parameters
+    # Automation parameters
     [Parameter(Mandatory=$false)]
-    [ValidateSet("ViewPolicies", "MoveUser", "MoveUserAuto", "CheckStatus", "EndGracePeriod", "MonitorProvisioning", "CompleteRecovery", "DeprovisionSingle", "DeprovisionBulk", "Interactive")]
+    [ValidateSet("ViewPolicies", "ViewNetworkConnections", "MoveUser", "MoveUserAuto", "CheckStatus", "EndGracePeriod", "MonitorProvisioning", "CompleteRecovery", "DeprovisionSingle", "DeprovisionBulk", "Interactive")]
     [string]$Operation = "Interactive",
     
     [Parameter(Mandatory=$false)]
@@ -350,6 +356,58 @@ function Get-CloudPCProvisioningPolicies {
     }
 }
 
+# Function to get all Azure Network Connections (On-Premises Connections)
+function Get-AzureNetworkConnections {
+    try {
+        Write-Output-Safe "Retrieving Azure Network Connections (On-Premises Connections)..." -ForegroundColor Yellow
+        
+        $uri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/onPremisesConnections"
+        $connections = Invoke-MgGraphRequest -Uri $uri -Method GET
+        
+        if ($connections.value.Count -eq 0) {
+            Write-Output-Safe "No Azure Network Connections found" -ForegroundColor Yellow
+            return $null
+        }
+        
+        Write-Output-Safe "Found $($connections.value.Count) network connections:" -ForegroundColor Green
+        
+        $connectionList = @()
+        foreach ($connection in $connections.value) {
+            Write-Output-Safe "  Processing connection: $($connection.displayName)..." -ForegroundColor Gray
+            
+            $connectionInfo = [PSCustomObject]@{
+                Id = $connection.id
+                DisplayName = $connection.displayName
+                SubscriptionId = $connection.subscriptionId
+                ConnectionType = $connection.connectionType
+                SubscriptionName = $connection.subscriptionName
+                AdDomainName = $connection.adDomainName
+                AdDomainUsername = $connection.adDomainUsername
+                OrganizationalUnit = $connection.organizationalUnit
+                ResourceGroupId = $connection.resourceGroupId
+                VirtualNetworkId = $connection.virtualNetworkId
+                VirtualNetworkLocation = $connection.virtualNetworkLocation
+                SubnetId = $connection.subnetId
+                HealthCheckStatus = $connection.healthCheckStatus
+                HealthCheckStatusDetails = if ($connection.healthCheckStatusDetails) { $connection.healthCheckStatusDetails.displayName } else { "N/A" }
+                InUse = $connection.inUse
+                ManagedBy = $connection.managedBy
+                Type = $connection.type
+            }
+            
+            $connectionList += $connectionInfo
+            Write-Output-Safe "  - $($connection.displayName) (Status: $($connection.healthCheckStatus))" -ForegroundColor White
+        }
+        
+        return $connectionList
+    }
+    catch {
+        Write-Output-Safe "Error retrieving Azure Network Connections: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Output-Safe "Full error details: $($_.Exception)" -ForegroundColor Red
+        return $null
+    }
+}
+
 # Function to display policies in a formatted table
 function Show-ProvisioningPolicies {
     param([array]$Policies)
@@ -360,7 +418,7 @@ function Show-ProvisioningPolicies {
     }
     
     Write-Output-Safe "`nProvisioning Policies and Group Assignments:" -ForegroundColor Cyan
-    Write-Output-Safe ("=" * 60) -ForegroundColor Cyan
+    Write-Output-Safe "============================================================" -ForegroundColor Cyan
     
     for ($i = 0; $i -lt $Policies.Count; $i++) {
         $policy = $Policies[$i]
@@ -383,6 +441,78 @@ function Show-ProvisioningPolicies {
                 Write-Output-Safe "        Group ID: $($group.GroupId)" -ForegroundColor Gray
             }
         }
+    }
+}
+
+# Function to display network connections in a formatted table
+function Show-NetworkConnections {
+    param([array]$Connections)
+    
+    if (-not $Connections) {
+        Write-Output-Safe "No network connections to display" -ForegroundColor Yellow
+        return
+    }
+    
+    Write-Output-Safe "`nAzure Network Connections (On-Premises Connections):" -ForegroundColor Cyan
+    Write-Output-Safe "================================================================================" -ForegroundColor Cyan
+    
+    for ($i = 0; $i -lt $Connections.Count; $i++) {
+        $connection = $Connections[$i]
+        Write-Output-Safe "`n[$($i + 1)] $($connection.DisplayName)" -ForegroundColor Yellow
+        Write-Output-Safe "    Connection ID: $($connection.Id)" -ForegroundColor Gray
+        Write-Output-Safe "    Subscription ID: $($connection.SubscriptionId)" -ForegroundColor Gray
+        Write-Output-Safe "    Subscription Name: $($connection.SubscriptionName)" -ForegroundColor Gray
+        Write-Output-Safe "    Connection Type: $($connection.ConnectionType)" -ForegroundColor Gray
+        Write-Output-Safe "    AD Domain Name: $($connection.AdDomainName)" -ForegroundColor Gray
+        Write-Output-Safe "    AD Domain Username: $($connection.AdDomainUsername)" -ForegroundColor Gray
+        Write-Output-Safe "    Organizational Unit: $($connection.OrganizationalUnit)" -ForegroundColor Gray
+        Write-Output-Safe "    Resource Group ID: $($connection.ResourceGroupId)" -ForegroundColor Gray
+        Write-Output-Safe "    Virtual Network ID: $($connection.VirtualNetworkId)" -ForegroundColor Gray
+        Write-Output-Safe "    Virtual Network Location: $($connection.VirtualNetworkLocation)" -ForegroundColor Gray
+        Write-Output-Safe "    Subnet ID: $($connection.SubnetId)" -ForegroundColor Gray
+        Write-Output-Safe "    Health Check Status: $($connection.HealthCheckStatus)" -ForegroundColor $(if ($connection.HealthCheckStatus -eq "passed") { "Green" } elseif ($connection.HealthCheckStatus -eq "pending") { "Yellow" } else { "Red" })
+        Write-Output-Safe "    Health Check Details: $($connection.HealthCheckStatusDetails)" -ForegroundColor Gray
+        Write-Output-Safe "    In Use: $($connection.InUse)" -ForegroundColor Gray
+        Write-Output-Safe "    Managed By: $($connection.ManagedBy)" -ForegroundColor Gray
+        Write-Output-Safe "    Type: $($connection.Type)" -ForegroundColor Gray
+    }
+}
+
+# Function to export network connections to CSV format
+function Export-NetworkConnectionsToCSV {
+    param([array]$Connections)
+    
+    if (-not $Connections) {
+        Write-Output-Safe "No network connections to export" -ForegroundColor Yellow
+        return
+    }
+    
+    # Output CSV headers
+    Write-Output "Id,DisplayName,SubscriptionId,ConnectionType,SubscriptionName,AdDomainName,AdDomainUsername,OrganizationalUnit,ResourceGroupId,VirtualNetworkId,VirtualNetworkLocation,SubnetId,HealthCheckStatus,HealthCheckStatusDetails,InUse,ManagedBy,Type"
+    
+    # Output CSV rows
+    foreach ($connection in $Connections) {
+        $csvRow = @(
+            "`"$($connection.Id)`"",
+            "`"$($connection.DisplayName)`"",
+            "`"$($connection.SubscriptionId)`"",
+            "`"$($connection.ConnectionType)`"",
+            "`"$($connection.SubscriptionName)`"",
+            "`"$($connection.AdDomainName)`"",
+            "`"$($connection.AdDomainUsername)`"",
+            "`"$($connection.OrganizationalUnit)`"",
+            "`"$($connection.ResourceGroupId)`"",
+            "`"$($connection.VirtualNetworkId)`"",
+            "`"$($connection.VirtualNetworkLocation)`"",
+            "`"$($connection.SubnetId)`"",
+            "`"$($connection.HealthCheckStatus)`"",
+            "`"$($connection.HealthCheckStatusDetails)`"",
+            "`"$($connection.InUse)`"",
+            "`"$($connection.ManagedBy)`"",
+            "`"$($connection.Type)`""
+        ) -join ","
+        
+        Write-Output $csvRow
     }
 }
 
@@ -502,11 +632,6 @@ function Get-UserGroupsForPolicy {
 
 # Function to wait with progress indicator (automated version)
 function Wait-WithProgress {
-    param(
-        [int]$Minutes,
-        [string]$Message = "Waiting for Azure to process group changes"
-    )
-    
     $totalSeconds = $Minutes * 60
     $interval = 10  # Update every 10 seconds
     
@@ -528,133 +653,12 @@ function Wait-WithProgress {
         Start-Sleep -Seconds $totalSeconds
     }
     
-# Function to get all Azure Network Connections (On-Premises Connections)
-function Get-AzureNetworkConnections {
-    try {
-        Write-Output-Safe "Retrieving Azure Network Connections (On-Premises Connections)..." -ForegroundColor Yellow
-        
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/onPremisesConnections"
-        $connections = Invoke-MgGraphRequest -Uri $uri -Method GET
-        
-        if ($connections.value.Count -eq 0) {
-            Write-Output-Safe "No Azure Network Connections found" -ForegroundColor Yellow
-            return $null
-        }
-        
-        Write-Output-Safe "Found $($connections.value.Count) network connections:" -ForegroundColor Green
-        
-        $connectionList = @()
-        foreach ($connection in $connections.value) {
-            Write-Output-Safe "  Processing connection: $($connection.displayName)..." -ForegroundColor Gray
-            
-            $connectionInfo = [PSCustomObject]@{
-                Id = $connection.id
-                DisplayName = $connection.displayName
-                SubscriptionId = $connection.subscriptionId
-                ConnectionType = $connection.connectionType
-                SubscriptionName = $connection.subscriptionName
-                AdDomainName = $connection.adDomainName
-                AdDomainUsername = $connection.adDomainUsername
-                OrganizationalUnit = $connection.organizationalUnit
-                ResourceGroupId = $connection.resourceGroupId
-                VirtualNetworkId = $connection.virtualNetworkId
-                VirtualNetworkLocation = $connection.virtualNetworkLocation
-                SubnetId = $connection.subnetId
-                HealthCheckStatus = $connection.healthCheckStatus
-                HealthCheckStatusDetails = if ($connection.healthCheckStatusDetails) { $connection.healthCheckStatusDetails.displayName } else { "N/A" }
-                InUse = $connection.inUse
-                ManagedBy = $connection.managedBy
-                Type = $connection.type
-            }
-            
-            $connectionList += $connectionInfo
-            Write-Output-Safe "  - $($connection.displayName) (Status: $($connection.healthCheckStatus))" -ForegroundColor White
-        }
-        
-        return $connectionList
-    }
-    catch {
-        Write-Output-Safe "Error retrieving Azure Network Connections: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Output-Safe "Full error details: $($_.Exception)" -ForegroundColor Red
-        return $null
-    }
+    Write-Output-Safe "Wait period completed. Proceeding with Cloud PC status check..." -ForegroundColor Green
 }
 
-# Function to display network connections in a formatted table
-function Show-NetworkConnections {
-    param([array]$Connections)
-    
-    if (-not $Connections) {
-        Write-Output-Safe "No network connections to display" -ForegroundColor Yellow
-        return
-    }
-    
-    Write-Output-Safe "`nAzure Network Connections (On-Premises Connections):" -ForegroundColor Cyan
-    Write-Output-Safe ("=" * 80) -ForegroundColor Cyan
-    
-    for ($i = 0; $i -lt $Connections.Count; $i++) {
-        $connection = $Connections[$i]
-        Write-Output-Safe "`n[$($i + 1)] $($connection.DisplayName)" -ForegroundColor Yellow
-        Write-Output-Safe "    Connection ID: $($connection.Id)" -ForegroundColor Gray
-        Write-Output-Safe "    Subscription ID: $($connection.SubscriptionId)" -ForegroundColor Gray
-        Write-Output-Safe "    Subscription Name: $($connection.SubscriptionName)" -ForegroundColor Gray
-        Write-Output-Safe "    Connection Type: $($connection.ConnectionType)" -ForegroundColor Gray
-        Write-Output-Safe "    AD Domain Name: $($connection.AdDomainName)" -ForegroundColor Gray
-        Write-Output-Safe "    AD Domain Username: $($connection.AdDomainUsername)" -ForegroundColor Gray
-        Write-Output-Safe "    Organizational Unit: $($connection.OrganizationalUnit)" -ForegroundColor Gray
-        Write-Output-Safe "    Resource Group ID: $($connection.ResourceGroupId)" -ForegroundColor Gray
-        Write-Output-Safe "    Virtual Network ID: $($connection.VirtualNetworkId)" -ForegroundColor Gray
-        Write-Output-Safe "    Virtual Network Location: $($connection.VirtualNetworkLocation)" -ForegroundColor Gray
-        Write-Output-Safe "    Subnet ID: $($connection.SubnetId)" -ForegroundColor Gray
-        Write-Output-Safe "    Health Check Status: $($connection.HealthCheckStatus)" -ForegroundColor $(if ($connection.HealthCheckStatus -eq "passed") { "Green" } elseif ($connection.HealthCheckStatus -eq "pending") { "Yellow" } else { "Red" })
-        Write-Output-Safe "    Health Check Details: $($connection.HealthCheckStatusDetails)" -ForegroundColor Gray
-        Write-Output-Safe "    In Use: $($connection.InUse)" -ForegroundColor Gray
-        Write-Output-Safe "    Managed By: $($connection.ManagedBy)" -ForegroundColor Gray
-        Write-Output-Safe "    Type: $($connection.Type)" -ForegroundColor Gray
-    }
-}
+# Cloud PC Recovery & Reprovisioning Tool - PART 2 OF 3
 
-# Function to export network connections to CSV format
-function Export-NetworkConnectionsToCSV {
-    param([array]$Connections)
-    
-    if (-not $Connections) {
-        Write-Output-Safe "No network connections to export" -ForegroundColor Yellow
-        return
-    }
-    
-    # Output CSV headers
-    Write-Output "Id,DisplayName,SubscriptionId,ConnectionType,SubscriptionName,AdDomainName,AdDomainUsername,OrganizationalUnit,ResourceGroupId,VirtualNetworkId,VirtualNetworkLocation,SubnetId,HealthCheckStatus,HealthCheckStatusDetails,InUse,ManagedBy,Type"
-    
-    # Output CSV rows
-    foreach ($connection in $Connections) {
-        $csvRow = @(
-            "`"$($connection.Id)`"",
-            "`"$($connection.DisplayName)`"",
-            "`"$($connection.SubscriptionId)`"",
-            "`"$($connection.ConnectionType)`"",
-            "`"$($connection.SubscriptionName)`"",
-            "`"$($connection.AdDomainName)`"",
-            "`"$($connection.AdDomainUsername)`"",
-            "`"$($connection.OrganizationalUnit)`"",
-            "`"$($connection.ResourceGroupId)`"",
-            "`"$($connection.VirtualNetworkId)`"",
-            "`"$($connection.VirtualNetworkLocation)`"",
-            "`"$($connection.SubnetId)`"",
-            "`"$($connection.HealthCheckStatus)`"",
-            "`"$($connection.HealthCheckStatusDetails)`"",
-            "`"$($connection.InUse)`"",
-            "`"$($connection.ManagedBy)`"",
-            "`"$($connection.Type)`""
-        ) -join ","
-        
-        Write-Output $csvRow
-    }
-}
-
-  # Automated Cloud PC Recovery Tool - PART 2 OF 3
-
-# UPDATED: Function to deprovision Cloud PC for single user (automated version)
+# Function to deprovision Cloud PC for single user (automated version)
 function Invoke-CloudPCDeprovision {
     param(
         [string]$UserPrincipalName,
@@ -664,7 +668,7 @@ function Invoke-CloudPCDeprovision {
     
     try {
         Write-Output-Safe "`nStarting Cloud PC deprovisioning for: $UserPrincipalName" -ForegroundColor Cyan
-        Write-Output-Safe ("=" * 60) -ForegroundColor Cyan
+        Write-Output-Safe "============================================================" -ForegroundColor Cyan
         
         # Get user object
         Write-Output-Safe "Looking up user..." -ForegroundColor Yellow
@@ -795,7 +799,7 @@ function Invoke-CloudPCDeprovision {
     }
 }
 
-# UPDATED: Function to deprovision Cloud PCs for multiple users (automated version)
+# Function to deprovision Cloud PCs for multiple users (automated version)
 function Invoke-BulkCloudPCDeprovision {
     param(
         [array]$UserPrincipalNames,
@@ -804,7 +808,7 @@ function Invoke-BulkCloudPCDeprovision {
     )
     
     Write-Output-Safe "`nStarting Bulk Cloud PC Deprovisioning" -ForegroundColor Cyan
-    Write-Output-Safe ("=" * 60) -ForegroundColor Cyan
+    Write-Output-Safe "============================================================" -ForegroundColor Cyan
     Write-Output-Safe "Users to process: $($UserPrincipalNames.Count)" -ForegroundColor White
     
     $results = @()
@@ -812,12 +816,12 @@ function Invoke-BulkCloudPCDeprovision {
     
     # Phase 1: Remove users from groups
     Write-Output-Safe "`nPhase 1: Removing users from provisioning policy groups..." -ForegroundColor Cyan
-    Write-Output-Safe ("=" * 60) -ForegroundColor Cyan
+    Write-Output-Safe "============================================================" -ForegroundColor Cyan
     
     foreach ($upn in $UserPrincipalNames) {
-        Write-Output-Safe "`n" + ("-" * 50) -ForegroundColor Gray
+        Write-Output-Safe "`n--------------------------------------------------" -ForegroundColor Gray
         Write-Output-Safe "Processing: $upn" -ForegroundColor Yellow
-        Write-Output-Safe ("-" * 50) -ForegroundColor Gray
+        Write-Output-Safe "--------------------------------------------------" -ForegroundColor Gray
         
         $result = [PSCustomObject]@{
             UserPrincipalName = $upn
@@ -899,9 +903,9 @@ function Invoke-BulkCloudPCDeprovision {
     
     # Phase 2: Wait for Azure to process changes (only if there were group changes)
     if ($usersWithGroupChanges.Count -gt 0) {
-        Write-Output-Safe "`n" + ("=" * 60) -ForegroundColor Cyan
+        Write-Output-Safe "`n============================================================" -ForegroundColor Cyan
         Write-Output-Safe "Phase 2: Waiting for Azure to process group changes..." -ForegroundColor Cyan
-        Write-Output-Safe ("=" * 60) -ForegroundColor Cyan
+        Write-Output-Safe "============================================================" -ForegroundColor Cyan
         Write-Output-Safe "Users with group changes: $($usersWithGroupChanges.Count)" -ForegroundColor White
         
         Wait-WithProgress -Minutes 5 -Message "Waiting for Azure to process group membership changes for all users"
@@ -909,14 +913,14 @@ function Invoke-BulkCloudPCDeprovision {
     
     # Phase 3: Check grace periods and optionally end them
     if ($usersWithGroupChanges.Count -gt 0) {
-        Write-Output-Safe "`n" + ("=" * 60) -ForegroundColor Cyan
+        Write-Output-Safe "`n============================================================" -ForegroundColor Cyan
         Write-Output-Safe "Phase 3: Checking grace periods and ending if requested..." -ForegroundColor Cyan
-        Write-Output-Safe ("=" * 60) -ForegroundColor Cyan
+        Write-Output-Safe "============================================================" -ForegroundColor Cyan
         
         foreach ($upn in $usersWithGroupChanges) {
-            Write-Output-Safe "`n" + ("-" * 50) -ForegroundColor Gray
+            Write-Output-Safe "`n--------------------------------------------------" -ForegroundColor Gray
             Write-Output-Safe "Checking grace period for: $upn" -ForegroundColor Yellow
-            Write-Output-Safe ("-" * 50) -ForegroundColor Gray
+            Write-Output-Safe "--------------------------------------------------" -ForegroundColor Gray
             
             $result = $results | Where-Object { $_.UserPrincipalName -eq $upn }
             
@@ -977,9 +981,9 @@ function Invoke-BulkCloudPCDeprovision {
     }
     
     # Display final summary
-    Write-Output-Safe "`n" + ("=" * 60) -ForegroundColor Cyan
+    Write-Output-Safe "`n============================================================" -ForegroundColor Cyan
     Write-Output-Safe "BULK DEPROVISIONING SUMMARY" -ForegroundColor Cyan
-    Write-Output-Safe ("=" * 60) -ForegroundColor Cyan
+    Write-Output-Safe "============================================================" -ForegroundColor Cyan
     
     $groupRemovalSuccessCount = ($results | Where-Object { $_.GroupRemovalSuccess }).Count
     $gracePeriodEndSuccessCount = ($results | Where-Object { $_.GracePeriodEndSuccess }).Count
@@ -1159,7 +1163,7 @@ function Show-CloudPCStatus {
     }
     
     Write-Output-Safe "`nCloud PC Status:" -ForegroundColor Cyan
-    Write-Output-Safe ("=" * 30) -ForegroundColor Cyan
+    Write-Output-Safe "==============================" -ForegroundColor Cyan
     
     foreach ($cloudPC in $CloudPCs) {
         Write-Output-Safe "`nCloud PC: $($cloudPC.DisplayName)" -ForegroundColor Yellow
@@ -1232,35 +1236,49 @@ function Wait-ForProvisioning {
     return $null
 }
 
-  # Automated Cloud PC Recovery Tool - PART 3 OF 3
+# Cloud PC Recovery & Reprovisioning Tool - PART 3 OF 3
 
 # Main menu function (interactive mode only)
 function Show-MainMenu {
     Write-Host "`nMain Menu:" -ForegroundColor Cyan
     Write-Host "==========" -ForegroundColor Cyan
     Write-Host "1. View all Provisioning Policies and Group Assignments"
-    Write-Host "2. Move User Between Provisioning Policies"
-    Write-Host "3. Move User Between Provisioning Policies (Auto-Discovery)" -ForegroundColor Green
-    Write-Host "4. Check User Cloud PC Status"
-    Write-Host "5. End Grace Period for Cloud PC"
-    Write-Host "6. Monitor New Cloud PC Provisioning"
-    Write-Host "7. Complete Recovery Workflow"
-    Write-Host "8. Deprovision Cloud PC (Single User)" -ForegroundColor Red
-    Write-Host "9. Deprovision Cloud PCs (Multiple Users)" -ForegroundColor Red
-    Write-Host "10. Disconnect and Exit"
+    Write-Host "2. View all Azure Network Connections" -ForegroundColor Cyan
+    Write-Host "3. Move User Between Provisioning Policies"
+    Write-Host "4. Move User Between Provisioning Policies (Auto-Discovery)" -ForegroundColor Green
+    Write-Host "5. Check User Cloud PC Status"
+    Write-Host "6. End Grace Period for Cloud PC"
+# Cloud PC Recovery & Reprovisioning Tool - PART 3 OF 3
+
+# Main menu function (interactive mode only)
+function Show-MainMenu {
+    Write-Host "`nMain Menu:" -ForegroundColor Cyan
+    Write-Host "==========" -ForegroundColor Cyan
+    Write-Host "1. View all Provisioning Policies and Group Assignments"
+    Write-Host "2. View all Azure Network Connections" -ForegroundColor Cyan
+    Write-Host "3. Move User Between Provisioning Policies"
+    Write-Host "4. Move User Between Provisioning Policies (Auto-Discovery)" -ForegroundColor Green
+    Write-Host "5. Check User Cloud PC Status"
+    Write-Host "6. End Grace Period for Cloud PC"
+    Write-Host "7. Monitor New Cloud PC Provisioning"
+    Write-Host "8. Complete Recovery Workflow"
+    Write-Host "9. Deprovision Cloud PC (Single User)" -ForegroundColor Red
+    Write-Host "10. Deprovision Cloud PCs (Multiple Users)" -ForegroundColor Red
+    Write-Host "11. Disconnect and Exit"
     Write-Host ""
 }
 
 # Function to show help
 function Show-Help {
     Write-Host "`nCloud PC Recovery & Reprovisioning Tool - Automated Mode" -ForegroundColor Cyan
-    Write-Host ("=" * 60) -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "USAGE:" -ForegroundColor Yellow
     Write-Host "  .\CloudPCTool.ps1 -Operation <OperationType> [additional parameters]" -ForegroundColor White
     Write-Host ""
     Write-Host "OPERATIONS:" -ForegroundColor Yellow
     Write-Host "  ViewPolicies          - Display all provisioning policies"
+    Write-Host "  ViewNetworkConnections - Display all Azure Network Connections"
     Write-Host "  CheckStatus          - Check Cloud PC status for user(s)"
     Write-Host "  DeprovisionSingle    - Deprovision single user's Cloud PC"
     Write-Host "  DeprovisionBulk      - Deprovision multiple users' Cloud PCs"
@@ -1282,6 +1300,12 @@ function Show-Help {
     Write-Host "EXAMPLES:" -ForegroundColor Yellow
     Write-Host "  # View all policies"
     Write-Host "  .\CloudPCTool.ps1 -Operation ViewPolicies"
+    Write-Host ""
+    Write-Host "  # View all network connections"
+    Write-Host "  .\CloudPCTool.ps1 -Operation ViewNetworkConnections"
+    Write-Host ""
+    Write-Host "  # Export network connections to CSV"
+    Write-Host "  .\CloudPCTool.ps1 -Operation ViewNetworkConnections -Silent > network_connections.csv"
     Write-Host ""
     Write-Host "  # Check status for single user"
     Write-Host "  .\CloudPCTool.ps1 -Operation CheckStatus -UserPrincipalName user@domain.com"
@@ -1322,6 +1346,20 @@ function Invoke-AutomatedOperation {
             return $true
         }
         
+        "viewnetworkconnections" {
+            Write-Output-Safe "=== VIEW AZURE NETWORK CONNECTIONS ===" -ForegroundColor Cyan
+            $connections = Get-AzureNetworkConnections
+            
+            if ($Global:SilentMode) {
+                # In silent mode, output CSV format for easy redirection
+                Export-NetworkConnectionsToCSV -Connections $connections
+            } else {
+                # In normal mode, show formatted output
+                Show-NetworkConnections -Connections $connections
+            }
+            return $true
+        }
+        
         "checkstatus" {
             Write-Output-Safe "=== CHECK CLOUD PC STATUS ===" -ForegroundColor Cyan
             
@@ -1335,7 +1373,7 @@ function Invoke-AutomatedOperation {
                 if (-not $users) { return $false }
                 
                 foreach ($user in $users) {
-                    Write-Output-Safe "`n" + ("-" * 50) -ForegroundColor Gray
+                    Write-Output-Safe "`n--------------------------------------------------" -ForegroundColor Gray
                     Write-Output-Safe "Checking status for: $user" -ForegroundColor Yellow
                     $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $user
                     Show-CloudPCStatus -CloudPCs $cloudPCs
@@ -1344,7 +1382,7 @@ function Invoke-AutomatedOperation {
             }
             elseif ($UserList) {
                 foreach ($user in $UserList) {
-                    Write-Output-Safe "`n" + ("-" * 50) -ForegroundColor Gray
+                    Write-Output-Safe "`n--------------------------------------------------" -ForegroundColor Gray
                     Write-Output-Safe "Checking status for: $user" -ForegroundColor Yellow
                     $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $user
                     Show-CloudPCStatus -CloudPCs $cloudPCs
@@ -1597,7 +1635,7 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
     Write-Output-Safe "Use -Operation parameter to run in automated mode" -ForegroundColor Gray
     Write-Output-Safe ""
     
-    # Main application loop (same as original)
+    # Main application loop
     do {
         Show-MainMenu
         $choice = Read-Host "Select an option (1-11)"
@@ -1611,7 +1649,7 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
             
             "2" {
                 Write-Host "`nView Azure Network Connections" -ForegroundColor Cyan
-                Write-Host ("=" * 60) -ForegroundColor Cyan
+                Write-Host "============================================================" -ForegroundColor Cyan
                 
                 $connections = Get-AzureNetworkConnections
                 Show-NetworkConnections -Connections $connections
@@ -1620,33 +1658,23 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
             
             "3" {
                 Write-Host "`nMove User Between Provisioning Policies" -ForegroundColor Cyan
-                Write-Host ("=" * 60) -ForegroundColor Cyan
+                Write-Host "============================================================" -ForegroundColor Cyan
                 
-                # Interactive user move logic (same as original)
-                $userPrincipalName = Read-Host "Enter user's email address (UPN)"
-                if (-not $userPrincipalName) {
-                    Write-Host "Invalid user principal name" -ForegroundColor Red
-                    Read-Host "`nPress Enter to continue"
-                    continue
-                }
-                
-                # ... rest of interactive logic would go here
                 Write-Host "Interactive move user functionality - same as original script" -ForegroundColor Yellow
                 Read-Host "`nPress Enter to continue"
             }
             
             "4" {
                 Write-Host "`nMove User Between Provisioning Policies (Auto-Discovery)" -ForegroundColor Cyan
-                Write-Host ("=" * 60) -ForegroundColor Cyan
+                Write-Host "============================================================" -ForegroundColor Cyan
                 
-                # Interactive auto-discovery logic (same as original)
                 Write-Host "Interactive auto-discovery functionality - same as original script" -ForegroundColor Yellow
                 Read-Host "`nPress Enter to continue"
             }
             
             "5" {
                 Write-Host "`nCheck User Cloud PC Status" -ForegroundColor Cyan
-                Write-Host ("=" * 60) -ForegroundColor Cyan
+                Write-Host "============================================================" -ForegroundColor Cyan
                 
                 $userPrincipalName = Read-Host "Enter user's email address (UPN)"
                 $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
@@ -1656,7 +1684,7 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
             
             "6" {
                 Write-Host "`nEnd Grace Period for Cloud PC" -ForegroundColor Cyan
-                Write-Host ("=" * 60) -ForegroundColor Cyan
+                Write-Host "============================================================" -ForegroundColor Cyan
                 
                 $userPrincipalName = Read-Host "Enter user's email address (UPN)"
                 $cloudPCs = Get-UserCloudPCStatus -UserPrincipalName $userPrincipalName
@@ -1681,7 +1709,7 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
             
             "7" {
                 Write-Host "`nMonitor New Cloud PC Provisioning" -ForegroundColor Cyan
-                Write-Host ("=" * 60) -ForegroundColor Cyan
+                Write-Host "============================================================" -ForegroundColor Cyan
                 
                 $userPrincipalName = Read-Host "Enter user's email address (UPN)"
                 $timeoutMinutes = Read-Host "Enter timeout in minutes (default: 30)"
@@ -1695,7 +1723,7 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
             
             "8" {
                 Write-Host "`nComplete Recovery Workflow" -ForegroundColor Cyan
-                Write-Host ("=" * 60) -ForegroundColor Cyan
+                Write-Host "============================================================" -ForegroundColor Cyan
                 
                 Write-Host "Interactive recovery workflow functionality - same as original script" -ForegroundColor Yellow
                 Read-Host "`nPress Enter to continue"
@@ -1703,7 +1731,7 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
             
             "9" {
                 Write-Host "`nDeprovision Cloud PC (Single User)" -ForegroundColor Red
-                Write-Host ("=" * 60) -ForegroundColor Red
+                Write-Host "============================================================" -ForegroundColor Red
                 
                 $userPrincipalName = Read-Host "Enter user's email address (UPN)"
                 if (-not $userPrincipalName) {
@@ -1740,7 +1768,7 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
             
             "10" {
                 Write-Host "`nDeprovision Cloud PCs (Multiple Users)" -ForegroundColor Red
-                Write-Host ("=" * 60) -ForegroundColor Red
+                Write-Host "============================================================" -ForegroundColor Red
                 
                 Write-Host "Enter user email addresses (UPNs). Enter blank line when done:" -ForegroundColor Yellow
                 $userList = @()
@@ -1796,97 +1824,7 @@ if ($Operation -eq "Interactive" -or (-not $Operation)) {
             }
         }
         
-    } while ($choice -ne "11") {
-                    Write-Host "No users provided" -ForegroundColor Yellow
-                    Read-Host "`nPress Enter to continue"
-                    continue
-                }
-                
-                Write-Host "`nUsers to deprovision:" -ForegroundColor White
-                for ($i = 0; $i -lt $userList.Count; $i++) {
-                    Write-Host "  $($i + 1). $($userList[$i])" -ForegroundColor White
-                }
-                
-                # Confirmation prompt
-                Write-Host "`nWARNING: This will deprovision Cloud PCs for $($userList.Count) users!" -ForegroundColor Yellow
-                Write-Host "This action will:" -ForegroundColor Yellow
-                Write-Host "- Remove users from provisioning policy groups" -ForegroundColor Yellow
-                Write-Host "- Wait 5 minutes for Azure to process the changes" -ForegroundColor Yellow
-                Write-Host "- Optionally end grace periods to complete deprovisioning" -ForegroundColor Yellow
-                Write-Host "- Result in data loss if not backed up" -ForegroundColor Yellow
-                
-                $confirm = Read-Host "`nAre you sure you want to proceed? (type 'YES' to confirm)"
-                if ($confirm -ne 'YES') {
-                    Write-Host "Bulk deprovisioning cancelled" -ForegroundColor Green
-                    Read-Host "`nPress Enter to continue"
-                    continue
-                }
-                
-                $results = Invoke-BulkCloudPCDeprovision -UserPrincipalNames $userList
-                
-                Write-Host "`nBulk deprovisioning operation completed!" -ForegroundColor Green
-                Read-Host "`nPress Enter to continue"
-            }
-            
-            "11" {
-                Write-Host "`nDisconnecting from Microsoft Graph..." -ForegroundColor Yellow
-                Disconnect-MgGraph
-                Write-Host "Goodbye!" -ForegroundColor Green
-                exit
-            }
-            
-            default {
-                Write-Host "Invalid option. Please select 1-11." -ForegroundColor Red
-                Start-Sleep -Seconds 2
-            }
-        }
-        
-    } while ($choice -ne "11") {
-                    Write-Host "No users provided" -ForegroundColor Yellow
-                    Read-Host "`nPress Enter to continue"
-                    continue
-                }
-                
-                Write-Host "`nUsers to deprovision:" -ForegroundColor White
-                for ($i = 0; $i -lt $userList.Count; $i++) {
-                    Write-Host "  $($i + 1). $($userList[$i])" -ForegroundColor White
-                }
-                
-                # Confirmation prompt
-                Write-Host "`nWARNING: This will deprovision Cloud PCs for $($userList.Count) users!" -ForegroundColor Yellow
-                Write-Host "This action will:" -ForegroundColor Yellow
-                Write-Host "- Remove users from provisioning policy groups" -ForegroundColor Yellow
-                Write-Host "- Wait 5 minutes for Azure to process the changes" -ForegroundColor Yellow
-                Write-Host "- Optionally end grace periods to complete deprovisioning" -ForegroundColor Yellow
-                Write-Host "- Result in data loss if not backed up" -ForegroundColor Yellow
-                
-                $confirm = Read-Host "`nAre you sure you want to proceed? (type 'YES' to confirm)"
-                if ($confirm -ne 'YES') {
-                    Write-Host "Bulk deprovisioning cancelled" -ForegroundColor Green
-                    Read-Host "`nPress Enter to continue"
-                    continue
-                }
-                
-                $results = Invoke-BulkCloudPCDeprovision -UserPrincipalNames $userList
-                
-                Write-Host "`nBulk deprovisioning operation completed!" -ForegroundColor Green
-                Read-Host "`nPress Enter to continue"
-            }
-            
-            "10" {
-                Write-Host "`nDisconnecting from Microsoft Graph..." -ForegroundColor Yellow
-                Disconnect-MgGraph
-                Write-Host "Goodbye!" -ForegroundColor Green
-                exit
-            }
-            
-            default {
-                Write-Host "Invalid option. Please select 1-10." -ForegroundColor Red
-                Start-Sleep -Seconds 2
-            }
-        }
-        
-    } while ($choice -ne "10")
+    } while ($choice -ne "11")
 } else {
     # Automated mode
     Write-Output-Safe "Running in Automated Mode: $Operation" -ForegroundColor Green
