@@ -1294,6 +1294,7 @@ function Show-MainMenu {
     Write-Host "4. Move User Between Provisioning Policies (Auto-Discovery)" -ForegroundColor Green
     Write-Host "5. Check User Cloud PC Status"
     Write-Host "6. End Grace Period for Cloud PC"
+}
 # Cloud PC Recovery & Reprovisioning Tool - PART 3 OF 3
 
 # Main menu function (interactive mode only)
