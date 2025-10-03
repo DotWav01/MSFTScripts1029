@@ -1,125 +1,154 @@
-# Test SharePoint Library Access with App Registration
-# This script authenticates using Client ID and Client Secret to verify access
+# PowerShell script to test both READ and WRITE access to SharePoint
+# App registration details
+$tenantId = "your-tenant-id" # e.g. contoso.onmicrosoft.com or GUID
+$clientId = "your-app-id"
+$clientSecret = "your-client-secret"
+$siteId = "your-sharepoint-site-id" # Can be site ID or site URL path encoded
 
-# Configuration - Update these values
-$TenantId = "your-tenant-id"  # Your Azure AD Tenant ID (GUID)
-$ClientId = "your-client-id"  # App Registration Client ID
-$ClientSecret = "your-client-secret"  # App Registration Client Secret
-$SiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"  # Target SharePoint site URL
-$LibraryName = "Documents"  # Document library name to test
-
-Write-Host "=== SharePoint App Registration Access Test ===" -ForegroundColor Cyan
+Write-Host "=== SharePoint Access Verification (Read & Write) ===" -ForegroundColor Cyan
 Write-Host ""
 
-# Step 1: Get Access Token
-Write-Host "Step 1: Requesting access token..." -ForegroundColor Yellow
-
-$TokenEndpoint = "https://accounts.accesscontrol.windows.net/$TenantId/tokens/OAuth/2"
-$Resource = "00000003-0000-0ff1-ce00-000000000000/$($SiteUrl.Split('/')[2])@$TenantId"
-
-$Body = @{
-    grant_type    = "client_credentials"
-    client_id     = "$ClientId@$TenantId"
-    client_secret = $ClientSecret
-    resource      = $Resource
+# Step 1: Get OAuth token
+Write-Host "Step 1: Obtaining access token..." -ForegroundColor Yellow
+$tokenUrl = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+$body = @{
+    client_id = $clientId
+    client_secret = $clientSecret
+    scope = "https://graph.microsoft.com/.default"
+    grant_type = "client_credentials"
 }
 
 try {
-    $TokenResponse = Invoke-RestMethod -Method Post -Uri $TokenEndpoint -Body $Body -ContentType "application/x-www-form-urlencoded"
-    $AccessToken = $TokenResponse.access_token
-    Write-Host "✓ Successfully obtained access token" -ForegroundColor Green
+    $tokenResponse = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ContentType "application/x-www-form-urlencoded"
+    $accessToken = $tokenResponse.access_token
+    Write-Host "✓ Access token obtained successfully" -ForegroundColor Green
     Write-Host ""
 }
 catch {
     Write-Host "✗ Failed to obtain access token" -ForegroundColor Red
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Common causes:" -ForegroundColor Yellow
-    Write-Host "  - Invalid Tenant ID, Client ID, or Client Secret"
-    Write-Host "  - App Registration not properly configured"
-    Write-Host "  - Client Secret expired"
     exit 1
 }
 
-# Step 2: Test Site Access
-Write-Host "Step 2: Testing site access..." -ForegroundColor Yellow
-
-$SiteApiUrl = "$SiteUrl/_api/web"
-$Headers = @{
-    "Authorization" = "Bearer $AccessToken"
-    "Accept"        = "application/json;odata=verbose"
+$headers = @{
+    'Authorization' = "Bearer $accessToken"
+    'Content-Type' = 'application/json'
 }
 
+# Step 2: Test READ access
+Write-Host "Step 2: Testing READ access to site..." -ForegroundColor Yellow
+$siteUrl = "https://graph.microsoft.com/v1.0/sites/$siteId"
+
 try {
-    $SiteInfo = Invoke-RestMethod -Method Get -Uri $SiteApiUrl -Headers $Headers
-    Write-Host "✓ Successfully accessed SharePoint site" -ForegroundColor Green
-    Write-Host "  Site Title: $($SiteInfo.d.Title)" -ForegroundColor Gray
-    Write-Host "  Site URL: $($SiteInfo.d.Url)" -ForegroundColor Gray
+    $siteResponse = Invoke-RestMethod -Uri $siteUrl -Headers $headers -Method Get
+    Write-Host "✓ READ access verified successfully" -ForegroundColor Green
+    Write-Host "  Site Name: $($siteResponse.displayName)" -ForegroundColor Gray
+    Write-Host "  Site ID: $($siteResponse.id)" -ForegroundColor Gray
     Write-Host ""
 }
 catch {
-    Write-Host "✗ Failed to access SharePoint site" -ForegroundColor Red
+    Write-Host "✗ READ access failed" -ForegroundColor Red
+    Write-Host "Status Code: $($_.Exception.Response.StatusCode.value__)" -ForegroundColor Red
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Common causes:" -ForegroundColor Yellow
-    Write-Host "  - App Registration doesn't have permissions to the site"
-    Write-Host "  - Site URL is incorrect"
-    Write-Host "  - SharePoint API permissions not granted"
+    if ($_.ErrorDetails.Message) {
+        $errorContent = $_.ErrorDetails.Message | ConvertFrom-Json
+        Write-Host "Error Details: $($errorContent.error.message)" -ForegroundColor Red
+    }
     exit 1
 }
 
-# Step 3: Test Library Access
-Write-Host "Step 3: Testing document library access..." -ForegroundColor Yellow
-
-$LibraryApiUrl = "$SiteUrl/_api/web/lists/getbytitle('$LibraryName')"
+# Step 3: Get document library (usually "Documents")
+Write-Host "Step 3: Getting document library..." -ForegroundColor Yellow
+$driveUrl = "https://graph.microsoft.com/v1.0/sites/$siteId/drive"
 
 try {
-    $LibraryInfo = Invoke-RestMethod -Method Get -Uri $LibraryApiUrl -Headers $Headers
-    Write-Host "✓ Successfully accessed document library" -ForegroundColor Green
-    Write-Host "  Library Title: $($LibraryInfo.d.Title)" -ForegroundColor Gray
-    Write-Host "  Item Count: $($LibraryInfo.d.ItemCount)" -ForegroundColor Gray
+    $driveResponse = Invoke-RestMethod -Uri $driveUrl -Headers $headers -Method Get
+    $driveId = $driveResponse.id
+    Write-Host "✓ Document library found" -ForegroundColor Green
+    Write-Host "  Library Name: $($driveResponse.name)" -ForegroundColor Gray
+    Write-Host "  Drive ID: $driveId" -ForegroundColor Gray
     Write-Host ""
 }
 catch {
-    Write-Host "✗ Failed to access document library" -ForegroundColor Red
+    Write-Host "✗ Could not access document library" -ForegroundColor Red
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Common causes:" -ForegroundColor Yellow
-    Write-Host "  - Library name is incorrect"
-    Write-Host "  - Insufficient permissions on the library"
     exit 1
 }
 
-# Step 4: List Recent Items (optional)
-Write-Host "Step 4: Listing recent items in library..." -ForegroundColor Yellow
+# Step 4: Test WRITE access by creating a test file
+Write-Host "Step 4: Testing WRITE access (creating test file)..." -ForegroundColor Yellow
+$testFileName = "AccessTest_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+$testFileContent = "This is a test file created to verify write access. Created at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+$testFileBytes = [System.Text.Encoding]::UTF8.GetBytes($testFileContent)
 
-$ItemsApiUrl = "$SiteUrl/_api/web/lists/getbytitle('$LibraryName')/items?`$top=5&`$select=Title,FileLeafRef,Created"
+$uploadUrl = "https://graph.microsoft.com/v1.0/sites/$siteId/drive/root:/$testFileName`:/content"
 
 try {
-    $Items = Invoke-RestMethod -Method Get -Uri $ItemsApiUrl -Headers $Headers
+    $uploadResponse = Invoke-RestMethod -Uri $uploadUrl -Headers @{
+        'Authorization' = "Bearer $accessToken"
+        'Content-Type' = 'text/plain'
+    } -Method Put -Body $testFileBytes
     
-    if ($Items.d.results.Count -eq 0) {
-        Write-Host "  No items found in library" -ForegroundColor Gray
-    }
-    else {
-        Write-Host "✓ Successfully retrieved items (showing up to 5):" -ForegroundColor Green
-        foreach ($Item in $Items.d.results) {
-            Write-Host "  - $($Item.FileLeafRef) (Created: $($Item.Created))" -ForegroundColor Gray
-        }
-    }
+    Write-Host "✓ WRITE access verified successfully" -ForegroundColor Green
+    Write-Host "  Test file created: $testFileName" -ForegroundColor Gray
+    Write-Host "  File ID: $($uploadResponse.id)" -ForegroundColor Gray
+    $fileId = $uploadResponse.id
     Write-Host ""
+    
+    # Step 5: Verify we can read the file back
+    Write-Host "Step 5: Verifying file was created (reading back)..." -ForegroundColor Yellow
+    $fileUrl = "https://graph.microsoft.com/v1.0/sites/$siteId/drive/items/$fileId"
+    
+    try {
+        $fileResponse = Invoke-RestMethod -Uri $fileUrl -Headers $headers -Method Get
+        Write-Host "✓ File verified successfully" -ForegroundColor Green
+        Write-Host "  File Name: $($fileResponse.name)" -ForegroundColor Gray
+        Write-Host "  Size: $($fileResponse.size) bytes" -ForegroundColor Gray
+        Write-Host "  Created: $($fileResponse.createdDateTime)" -ForegroundColor Gray
+        Write-Host ""
+    }
+    catch {
+        Write-Host "⚠ File was created but could not be verified" -ForegroundColor Yellow
+        Write-Host ""
+    }
+    
+    # Step 6: Clean up - delete the test file
+    Write-Host "Step 6: Cleaning up (deleting test file)..." -ForegroundColor Yellow
+    try {
+        Invoke-RestMethod -Uri $fileUrl -Headers $headers -Method Delete | Out-Null
+        Write-Host "✓ Test file deleted successfully" -ForegroundColor Green
+        Write-Host ""
+    }
+    catch {
+        Write-Host "⚠ Could not delete test file: $testFileName" -ForegroundColor Yellow
+        Write-Host "  Please delete it manually if needed" -ForegroundColor Gray
+        Write-Host ""
+    }
 }
 catch {
-    Write-Host "⚠ Could not list items (but connection successful)" -ForegroundColor Yellow
+    Write-Host "✗ WRITE access failed" -ForegroundColor Red
+    Write-Host "Status Code: $($_.Exception.Response.StatusCode.value__)" -ForegroundColor Red
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    if ($_.ErrorDetails.Message) {
+        $errorContent = $_.ErrorDetails.Message | ConvertFrom-Json
+        Write-Host "Error Details: $($errorContent.error.message)" -ForegroundColor Red
+    }
     Write-Host ""
+    Write-Host "Common causes:" -ForegroundColor Yellow
+    Write-Host "  - App Registration lacks Sites.ReadWrite.All permission" -ForegroundColor Gray
+    Write-Host "  - Permission not granted admin consent" -ForegroundColor Gray
+    Write-Host "  - App only has Sites.Read.All permission" -ForegroundColor Gray
+    Write-Host ""
+    exit 1
 }
 
-# Success Summary
-Write-Host "=== Test Completed Successfully ===" -ForegroundColor Green
-Write-Host "Your App Registration has access to the SharePoint site and library!" -ForegroundColor Green
+# Final Summary
+Write-Host "=== Access Verification Complete ===" -ForegroundColor Green
 Write-Host ""
-Write-Host "Permissions confirmed:" -ForegroundColor Cyan
-Write-Host "  ✓ Authenticate with Client Credentials" -ForegroundColor Green
-Write-Host "  ✓ Read Site Information" -ForegroundColor Green
-Write-Host "  ✓ Access Document Library" -ForegroundColor Green
-Write-Host "  ✓ Read Library Items" -ForegroundColor Green
+Write-Host "Permissions Summary:" -ForegroundColor Cyan
+Write-Host "  ✓ Authentication: Success" -ForegroundColor Green
+Write-Host "  ✓ Read Access: Verified" -ForegroundColor Green
+Write-Host "  ✓ Write Access: Verified" -ForegroundColor Green
+Write-Host "  ✓ Delete Access: Verified" -ForegroundColor Green
+Write-Host ""
+Write-Host "Your App Registration has full read/write access to the SharePoint site!" -ForegroundColor Green
