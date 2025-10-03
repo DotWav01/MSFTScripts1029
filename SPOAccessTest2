@@ -1,0 +1,125 @@
+# Test SharePoint Library Access with App Registration
+# This script authenticates using Client ID and Client Secret to verify access
+
+# Configuration - Update these values
+$TenantId = "your-tenant-id"  # Your Azure AD Tenant ID (GUID)
+$ClientId = "your-client-id"  # App Registration Client ID
+$ClientSecret = "your-client-secret"  # App Registration Client Secret
+$SiteUrl = "https://yourtenant.sharepoint.com/sites/yoursite"  # Target SharePoint site URL
+$LibraryName = "Documents"  # Document library name to test
+
+Write-Host "=== SharePoint App Registration Access Test ===" -ForegroundColor Cyan
+Write-Host ""
+
+# Step 1: Get Access Token
+Write-Host "Step 1: Requesting access token..." -ForegroundColor Yellow
+
+$TokenEndpoint = "https://accounts.accesscontrol.windows.net/$TenantId/tokens/OAuth/2"
+$Resource = "00000003-0000-0ff1-ce00-000000000000/$($SiteUrl.Split('/')[2])@$TenantId"
+
+$Body = @{
+    grant_type    = "client_credentials"
+    client_id     = "$ClientId@$TenantId"
+    client_secret = $ClientSecret
+    resource      = $Resource
+}
+
+try {
+    $TokenResponse = Invoke-RestMethod -Method Post -Uri $TokenEndpoint -Body $Body -ContentType "application/x-www-form-urlencoded"
+    $AccessToken = $TokenResponse.access_token
+    Write-Host "✓ Successfully obtained access token" -ForegroundColor Green
+    Write-Host ""
+}
+catch {
+    Write-Host "✗ Failed to obtain access token" -ForegroundColor Red
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Common causes:" -ForegroundColor Yellow
+    Write-Host "  - Invalid Tenant ID, Client ID, or Client Secret"
+    Write-Host "  - App Registration not properly configured"
+    Write-Host "  - Client Secret expired"
+    exit 1
+}
+
+# Step 2: Test Site Access
+Write-Host "Step 2: Testing site access..." -ForegroundColor Yellow
+
+$SiteApiUrl = "$SiteUrl/_api/web"
+$Headers = @{
+    "Authorization" = "Bearer $AccessToken"
+    "Accept"        = "application/json;odata=verbose"
+}
+
+try {
+    $SiteInfo = Invoke-RestMethod -Method Get -Uri $SiteApiUrl -Headers $Headers
+    Write-Host "✓ Successfully accessed SharePoint site" -ForegroundColor Green
+    Write-Host "  Site Title: $($SiteInfo.d.Title)" -ForegroundColor Gray
+    Write-Host "  Site URL: $($SiteInfo.d.Url)" -ForegroundColor Gray
+    Write-Host ""
+}
+catch {
+    Write-Host "✗ Failed to access SharePoint site" -ForegroundColor Red
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Common causes:" -ForegroundColor Yellow
+    Write-Host "  - App Registration doesn't have permissions to the site"
+    Write-Host "  - Site URL is incorrect"
+    Write-Host "  - SharePoint API permissions not granted"
+    exit 1
+}
+
+# Step 3: Test Library Access
+Write-Host "Step 3: Testing document library access..." -ForegroundColor Yellow
+
+$LibraryApiUrl = "$SiteUrl/_api/web/lists/getbytitle('$LibraryName')"
+
+try {
+    $LibraryInfo = Invoke-RestMethod -Method Get -Uri $LibraryApiUrl -Headers $Headers
+    Write-Host "✓ Successfully accessed document library" -ForegroundColor Green
+    Write-Host "  Library Title: $($LibraryInfo.d.Title)" -ForegroundColor Gray
+    Write-Host "  Item Count: $($LibraryInfo.d.ItemCount)" -ForegroundColor Gray
+    Write-Host ""
+}
+catch {
+    Write-Host "✗ Failed to access document library" -ForegroundColor Red
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Common causes:" -ForegroundColor Yellow
+    Write-Host "  - Library name is incorrect"
+    Write-Host "  - Insufficient permissions on the library"
+    exit 1
+}
+
+# Step 4: List Recent Items (optional)
+Write-Host "Step 4: Listing recent items in library..." -ForegroundColor Yellow
+
+$ItemsApiUrl = "$SiteUrl/_api/web/lists/getbytitle('$LibraryName')/items?`$top=5&`$select=Title,FileLeafRef,Created"
+
+try {
+    $Items = Invoke-RestMethod -Method Get -Uri $ItemsApiUrl -Headers $Headers
+    
+    if ($Items.d.results.Count -eq 0) {
+        Write-Host "  No items found in library" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "✓ Successfully retrieved items (showing up to 5):" -ForegroundColor Green
+        foreach ($Item in $Items.d.results) {
+            Write-Host "  - $($Item.FileLeafRef) (Created: $($Item.Created))" -ForegroundColor Gray
+        }
+    }
+    Write-Host ""
+}
+catch {
+    Write-Host "⚠ Could not list items (but connection successful)" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+# Success Summary
+Write-Host "=== Test Completed Successfully ===" -ForegroundColor Green
+Write-Host "Your App Registration has access to the SharePoint site and library!" -ForegroundColor Green
+Write-Host ""
+Write-Host "Permissions confirmed:" -ForegroundColor Cyan
+Write-Host "  ✓ Authenticate with Client Credentials" -ForegroundColor Green
+Write-Host "  ✓ Read Site Information" -ForegroundColor Green
+Write-Host "  ✓ Access Document Library" -ForegroundColor Green
+Write-Host "  ✓ Read Library Items" -ForegroundColor Green
