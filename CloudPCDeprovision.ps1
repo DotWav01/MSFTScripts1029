@@ -164,32 +164,55 @@ function Get-AllProvisioningPolicyGroups {
             foreach ($policy in $policies.value) {
                 Write-Log "Processing policy: $($policy.displayName)" -Level INFO
                 
-                # Get assignments for this policy
-                $assignmentUri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/provisioningPolicies/$($policy.id)/assignments"
-                $assignments = Invoke-MgGraphRequest -Uri $assignmentUri -Method GET
-                
-                if ($assignments.value) {
-                    foreach ($assignment in $assignments.value) {
-                        if ($assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget') {
-                            $groupId = $assignment.target.groupId
-                            
-                            try {
-                                $group = Get-MgGroup -GroupId $groupId -ErrorAction Stop
-                                $allProvisioningGroups += [PSCustomObject]@{
-                                    GroupId = $group.Id
-                                    GroupName = $group.DisplayName
-                                    PolicyId = $policy.id
-                                    PolicyName = $policy.displayName
-                                    GroupTypes = $group.GroupTypes
-                                    IsDynamic = $group.GroupTypes -contains "DynamicMembership"
+                # Get assignments using the expand parameter (this is the key difference!)
+                try {
+                    $expandUri = "https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/provisioningPolicies/$($policy.id)?`$expand=assignments"
+                    $policyDetails = Invoke-MgGraphRequest -Uri $expandUri -Method GET -ErrorAction Stop
+                    
+                    if ($policyDetails.assignments -and $policyDetails.assignments.Count -gt 0) {
+                        Write-Log "  Found $($policyDetails.assignments.Count) assignment(s)" -Level INFO
+                        
+                        foreach ($assignment in $policyDetails.assignments) {
+                            # Handle different assignment target types
+                            if ($assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget' -or 
+                                $assignment.target.'@odata.type' -eq '#microsoft.graph.cloudPcManagementGroupAssignmentTarget') {
+                                
+                                $groupId = $assignment.target.groupId
+                                
+                                try {
+                                    $group = Get-MgGroup -GroupId $groupId -ErrorAction Stop
+                                    $allProvisioningGroups += [PSCustomObject]@{
+                                        GroupId = $group.Id
+                                        GroupName = $group.DisplayName
+                                        PolicyId = $policy.id
+                                        PolicyName = $policy.displayName
+                                        GroupTypes = $group.GroupTypes
+                                        IsDynamic = $group.GroupTypes -contains "DynamicMembership"
+                                    }
+                                    Write-Log "  - Group: $($group.DisplayName) ($(if ($group.GroupTypes -contains 'DynamicMembership') { 'Dynamic' } else { 'Static' }))" -Level INFO
                                 }
-                                Write-Log "  - Group: $($group.DisplayName)" -Level INFO
+                                catch {
+                                    Write-Log "  - Warning: Could not retrieve group with ID: $groupId - $($_.Exception.Message)" -Level WARNING
+                                }
                             }
-                            catch {
-                                Write-Log "  - Warning: Could not retrieve group with ID: $groupId" -Level WARNING
+                            elseif ($assignment.target.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget') {
+                                Write-Log "  - Assignment: All Licensed Users (built-in target)" -Level INFO
+                            }
+                            elseif ($assignment.target.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget') {
+                                Write-Log "  - Assignment: All Devices (built-in target)" -Level INFO
+                            }
+                            else {
+                                Write-Log "  - Unknown assignment target type: $($assignment.target.'@odata.type')" -Level WARNING
                             }
                         }
                     }
+                    else {
+                        Write-Log "  No assignments found for this policy" -Level WARNING
+                    }
+                }
+                catch {
+                    Write-Log "  Warning: Could not retrieve assignments for policy '$($policy.displayName)': $($_.Exception.Message)" -Level WARNING
+                    Write-Log "  This may be due to insufficient permissions or API limitations" -Level WARNING
                 }
             }
         }
@@ -197,10 +220,12 @@ function Get-AllProvisioningPolicyGroups {
             Write-Log "No provisioning policies found" -Level WARNING
         }
         
+        Write-Log "Total provisioning groups found: $($allProvisioningGroups.Count)" -Level INFO
         return $allProvisioningGroups
     }
     catch {
         Write-Log "Error retrieving provisioning policies: $($_.Exception.Message)" -Level ERROR
+        Write-Log "Full error details: $($_.Exception)" -Level ERROR
         return @()
     }
 }
@@ -354,7 +379,10 @@ function End-CloudPCGracePeriod {
 }
 
 function Process-UserDeprovisioning {
-    param([string]$UserPrincipalName)
+    param(
+        [string]$UserPrincipalName,
+        [array]$AllProvisioningPolicyGroups
+    )
     
     Write-Log "========================================" -Level INFO
     Write-Log "Processing user: $UserPrincipalName" -Level INFO
@@ -373,9 +401,16 @@ function Process-UserDeprovisioning {
             return
         }
         
-        # Identify provisioning groups
-        $provisioningGroups = Get-ProvisioningGroups -UserGroups $userGroups
+        # Identify provisioning groups by matching against actual provisioning policies
+        $provisioningGroups = Get-ProvisioningGroups -UserGroups $userGroups -AllProvisioningPolicyGroups $AllProvisioningPolicyGroups
         Write-Log "Found $($provisioningGroups.Count) provisioning group(s)" -Level INFO
+        
+        # Display which policies the user is assigned to
+        if ($provisioningGroups.Count -gt 0) {
+            foreach ($provGroup in $provisioningGroups) {
+                Write-Log "  - $($provGroup.DisplayName) (Policy: $($provGroup.PolicyName))" -Level INFO
+            }
+        }
         
         # Identify licensing groups
         $licensingGroups = Get-LicensingGroups -UserGroups $userGroups
@@ -462,6 +497,22 @@ if (-not (Connect-ToMicrosoftGraph)) {
     exit
 }
 
+# Get all provisioning policy groups once at the beginning
+Write-Log "Retrieving all Windows 365 provisioning policies and their assigned groups..." -Level INFO
+$allProvisioningPolicyGroups = Get-AllProvisioningPolicyGroups
+
+if ($allProvisioningPolicyGroups.Count -eq 0) {
+    Write-Log "Warning: No provisioning policy groups found. The script may not be able to identify provisioning groups correctly." -Level WARNING
+    $continue = Read-Host "Do you want to continue? (Y/N)"
+    if ($continue -ne 'Y' -and $continue -ne 'y') {
+        Write-Log "Script cancelled by user" -Level INFO
+        exit
+    }
+}
+else {
+    Write-Log "Found $($allProvisioningPolicyGroups.Count) group(s) assigned to provisioning policies" -Level SUCCESS
+}
+
 # Determine input method if not specified
 if (-not $InputMethod) {
     Write-Host ""
@@ -497,7 +548,7 @@ switch ($InputMethod) {
         
         foreach ($upn in $users) {
             if ($upn) {
-                Process-UserDeprovisioning -UserPrincipalName $upn
+                Process-UserDeprovisioning -UserPrincipalName $upn -AllProvisioningPolicyGroups $allProvisioningPolicyGroups
                 Write-Host ""
             }
         }
@@ -525,7 +576,7 @@ switch ($InputMethod) {
             Write-Log "Found $($csvUsers.Count) user(s) in CSV file" -Level INFO
             
             foreach ($csvUser in $csvUsers) {
-                Process-UserDeprovisioning -UserPrincipalName $csvUser.UserPrincipalName
+                Process-UserDeprovisioning -UserPrincipalName $csvUser.UserPrincipalName -AllProvisioningPolicyGroups $allProvisioningPolicyGroups
                 Write-Host ""
             }
         }
