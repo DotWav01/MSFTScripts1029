@@ -381,7 +381,8 @@ function End-CloudPCGracePeriod {
 function Process-UserDeprovisioning {
     param(
         [string]$UserPrincipalName,
-        [array]$AllProvisioningPolicyGroups
+        [array]$AllProvisioningPolicyGroups,
+        [switch]$SkipWaitAndGracePeriod
     )
     
     Write-Log "========================================" -Level INFO
@@ -398,7 +399,7 @@ function Process-UserDeprovisioning {
         
         if ($userGroups.Count -eq 0) {
             Write-Log "User is not a member of any groups" -Level WARNING
-            return
+            return $null
         }
         
         # Identify provisioning groups by matching against actual provisioning policies
@@ -442,15 +443,28 @@ function Process-UserDeprovisioning {
             Remove-UserFromGroup -UserId $user.Id -GroupId $group.Id -GroupName $group.DisplayName -IsDynamic $group.IsDynamic
         }
         
-        # Wait 3 minutes for changes to propagate
-        Write-Log "Waiting 3 minutes for group membership changes to propagate..." -Level INFO
-        Start-Sleep -Seconds 180
-        
+        # Return user info for later grace period checking
+        return [PSCustomObject]@{
+            UserPrincipalName = $UserPrincipalName
+            UserId = $user.Id
+            DisplayName = $user.DisplayName
+        }
+    }
+    catch {
+        Write-Log "Error processing user $UserPrincipalName : $($_.Exception.Message)" -Level ERROR
+        return $null
+    }
+}
+
+function Check-UserCloudPCGracePeriod {
+    param([string]$UserPrincipalName)
+    
+    try {
         # Check Cloud PC status
         $cloudPCs = Get-UserCloudPCs -UserPrincipalName $UserPrincipalName
         
         if ($cloudPCs.Count -eq 0) {
-            Write-Log "No Cloud PCs found for user after group removal" -Level INFO
+            Write-Log "No Cloud PCs found for user: $UserPrincipalName" -Level INFO
             return
         }
         
@@ -475,10 +489,10 @@ function Process-UserDeprovisioning {
             }
         }
         
-        Write-Log "Deprovisioning completed for user: $UserPrincipalName" -Level SUCCESS
+        Write-Log "Grace period check completed for user: $UserPrincipalName" -Level SUCCESS
     }
     catch {
-        Write-Log "Error processing user $UserPrincipalName : $($_.Exception.Message)" -Level ERROR
+        Write-Log "Error checking grace period for user $UserPrincipalName : $($_.Exception.Message)" -Level ERROR
     }
 }
 
