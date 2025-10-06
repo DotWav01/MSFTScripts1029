@@ -443,6 +443,8 @@ function Process-UserDeprovisioning {
             Remove-UserFromGroup -UserId $user.Id -GroupId $group.Id -GroupName $group.DisplayName -IsDynamic $group.IsDynamic
         }
         
+        Write-Log "Group removal completed for user: $UserPrincipalName" -Level SUCCESS
+        
         # Return user info for later grace period checking
         return [PSCustomObject]@{
             UserPrincipalName = $UserPrincipalName
@@ -560,9 +562,27 @@ switch ($InputMethod) {
             $users = @($UserPrincipalName)
         }
         
+        $processedUsers = @()
         foreach ($upn in $users) {
             if ($upn) {
-                Process-UserDeprovisioning -UserPrincipalName $upn -AllProvisioningPolicyGroups $allProvisioningPolicyGroups
+                $userInfo = Process-UserDeprovisioning -UserPrincipalName $upn -AllProvisioningPolicyGroups $allProvisioningPolicyGroups
+                if ($userInfo) {
+                    $processedUsers += $userInfo
+                }
+                Write-Host ""
+            }
+        }
+        
+        # Wait 3 minutes for group changes to propagate (only once for all users)
+        if ($processedUsers.Count -gt 0) {
+            Write-Log "Waiting 3 minutes for group membership changes to propagate for all users..." -Level INFO
+            Start-Sleep -Seconds 180
+            
+            # Check grace period for all users
+            Write-Log "Checking Cloud PC grace periods for all users..." -Level INFO
+            foreach ($userInfo in $processedUsers) {
+                Write-Log "Checking grace period for: $($userInfo.UserPrincipalName)" -Level INFO
+                Check-UserCloudPCGracePeriod -UserPrincipalName $userInfo.UserPrincipalName
                 Write-Host ""
             }
         }
@@ -589,9 +609,29 @@ switch ($InputMethod) {
             
             Write-Log "Found $($csvUsers.Count) user(s) in CSV file" -Level INFO
             
+            # Process all users first (remove from groups)
+            $processedUsers = @()
             foreach ($csvUser in $csvUsers) {
-                Process-UserDeprovisioning -UserPrincipalName $csvUser.UserPrincipalName -AllProvisioningPolicyGroups $allProvisioningPolicyGroups
+                $userInfo = Process-UserDeprovisioning -UserPrincipalName $csvUser.UserPrincipalName -AllProvisioningPolicyGroups $allProvisioningPolicyGroups
+                if ($userInfo) {
+                    $processedUsers += $userInfo
+                }
                 Write-Host ""
+            }
+            
+            # Wait 3 minutes for group changes to propagate (only once for all users)
+            if ($processedUsers.Count -gt 0) {
+                Write-Log "Completed group removal for $($processedUsers.Count) user(s)" -Level SUCCESS
+                Write-Log "Waiting 3 minutes for group membership changes to propagate for all users..." -Level INFO
+                Start-Sleep -Seconds 180
+                
+                # Check grace period for all users
+                Write-Log "Checking Cloud PC grace periods for all users..." -Level INFO
+                foreach ($userInfo in $processedUsers) {
+                    Write-Log "Checking grace period for: $($userInfo.UserPrincipalName)" -Level INFO
+                    Check-UserCloudPCGracePeriod -UserPrincipalName $userInfo.UserPrincipalName
+                    Write-Host ""
+                }
             }
         }
         catch {
