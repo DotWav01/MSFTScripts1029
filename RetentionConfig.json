@@ -1,0 +1,13 @@
+{
+    "authMethod": "Interactive",
+    "tenantId": "",
+    "appId": "",
+    "organization": "",
+    "certificatePath": "C:\\temp\\RetentionPolicyApp.pfx",
+    "certificatePassword": "",
+    "policyName": "",
+    "csvPath": "",
+    "batchSize": 100,
+    "groupNames": [""],
+    "logPath": "C:\\temp\\retention_policy.log"
+}
