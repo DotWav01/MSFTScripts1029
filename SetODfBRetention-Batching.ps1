@@ -4,7 +4,7 @@
 .DESCRIPTION
     Can query Entra ID groups to get member OneDrive URLs, or read from CSV file.
     Tracks which URLs have been added to retention policies.
-    Supports fallback to secondary policies when primary policy reaches capacity (100 URL limit).
+    Uses smart batch processing to efficiently handle multiple policies with 100 URL capacity limits.
     Supports both interactive user authentication and app-only certificate authentication.
 .PARAMETER ConfigPath
     Path to the configuration JSON file
@@ -14,6 +14,8 @@
     Switch to query Entra ID groups instead of using CSV file
 .PARAMETER GroupNames
     Array of Entra ID group names to query (only used with -QueryGroups)
+.PARAMETER AutoConfirm
+    Skip confirmation prompt and proceed automatically (useful for scheduled tasks)
 #>
 
 param(
@@ -21,7 +23,8 @@ param(
     [ValidateSet('Interactive', 'Certificate', '')]
     [string]$AuthMethod = "",
     [switch]$QueryGroups,
-    [string[]]$GroupNames
+    [string[]]$GroupNames,
+    [switch]$AutoConfirm
 )
 
 # Function to write log messages
@@ -242,33 +245,6 @@ function Get-OneDriveUrlsFromGroups {
     
     Write-Log "Total unique users with OneDrive found: $($allResults.Count)" "INFO" $LogPath
     return $allResults
-}
-
-# Function to try adding URL to a policy
-function Add-UrlToPolicy {
-    param(
-        [string]$PolicyName,
-        [string]$OneDriveUrl,
-        [string]$LogPath
-    )
-    
-    try {
-        Set-RetentionCompliancePolicy -Identity $PolicyName -AddOneDriveLocation $OneDriveUrl -ErrorAction Stop
-        return $true
-    }
-    catch {
-        $errorMessage = $_.Exception.Message
-        
-        # Check if error is due to capacity limit
-        if ($errorMessage -like "*limit*" -or $errorMessage -like "*maximum*" -or $errorMessage -like "*capacity*" -or $errorMessage -like "*100*") {
-            Write-Log "    Policy '$PolicyName' appears to be at capacity" "WARNING" $LogPath
-            return $false
-        }
-        else {
-            Write-Log "    Error adding to policy '$PolicyName': $errorMessage" "ERROR" $LogPath
-            return $false
-        }
-    }
 }
 
 # Load configuration
@@ -534,8 +510,8 @@ foreach ($policyName in $policyNames) {
     }
 }
 
-# Process URLs with multi-policy support
-Write-Log "=== PROCESSING ONEDRIVE URLS WITH MULTI-POLICY SUPPORT ===" "INFO" $logPath
+# Process URLs with smart batching by policy
+Write-Log "=== PROCESSING ONEDRIVE URLS WITH SMART POLICY BATCHING ===" "INFO" $logPath
 $urlsToProcess = @()
 $skippedCount = 0
 $urlToItemMap = @{}
@@ -577,7 +553,7 @@ foreach ($item in $oneDriveList) {
 
 Write-Log "URLs to process: $($urlsToProcess.Count) | Already added/skipped: $skippedCount" "INFO" $logPath
 
-# Process URLs one by one with policy fallback
+# Process URLs with smart batching by policy
 if ($urlsToProcess.Count -gt 0) {
     $successfullyAdded = @()
     $failedUrls = @()
@@ -588,47 +564,208 @@ if ($urlsToProcess.Count -gt 0) {
         $policyCounts[$policyName] = 0
     }
     
-    Write-Log "Processing URLs individually with policy fallback logic..." "INFO" $logPath
-    $urlCounter = 0
+    Write-Log "Using batch processing strategy for efficient policy updates" "INFO" $logPath
     
-    foreach ($url in $urlsToProcess) {
-        $urlCounter++
-        $item = $urlToItemMap[$url]
-        $userDisplay = if ($item.UserPrincipalName) { $item.UserPrincipalName } else { $url }
-        
-        Write-Log "[$urlCounter/$($urlsToProcess.Count)] Processing: $userDisplay" "INFO" $logPath
-        
-        $added = $false
-        
-        # Try each policy in order until one succeeds
-        foreach ($policyName in $policyNames) {
-            Write-Log "  Attempting to add to policy: $policyName" "INFO" $logPath
-            
-            if (Add-UrlToPolicy -PolicyName $policyName -OneDriveUrl $url -LogPath $logPath) {
-                # Successfully added
-                $item.AddedToPolicy = "Yes"
-                $item.PolicyName = $policyName
-                $successfullyAdded += $url
-                $policyCounts[$policyName]++
-                $added = $true
-                Write-Log "  ✓ Successfully added to policy: $policyName" "SUCCESS" $logPath
-                break
-            }
-            else {
-                Write-Log "  ✗ Failed to add to policy: $policyName, trying next policy..." "WARNING" $logPath
-            }
+    $remainingUrls = [System.Collections.ArrayList]@($urlsToProcess)
+    
+    # Build batches for each policy
+    $policyBatches = @{}
+    
+    Write-Log "" "INFO" $logPath
+    Write-Log "========================================" "INFO" $logPath
+    Write-Log "ANALYZING POLICIES AND BUILDING BATCHES" "INFO" $logPath
+    Write-Log "========================================" "INFO" $logPath
+    
+    foreach ($policyName in $policyNames) {
+        if ($remainingUrls.Count -eq 0) {
+            Write-Log "All URLs have been assigned to policies" "SUCCESS" $logPath
+            break
         }
         
-        if (!$added) {
-            Write-Log "  ✗ Failed to add to ANY policy" "ERROR" $logPath
+        Write-Log "" "INFO" $logPath
+        Write-Log "Analyzing policy: $policyName" "INFO" $logPath
+        
+        # Check current capacity of the policy
+        try {
+            $policy = Get-RetentionCompliancePolicy -Identity $policyName -DistributionDetail -ErrorAction Stop
+            $currentCount = $policy.OneDriveLocation.Count
+            $availableCapacity = 100 - $currentCount
+            
+            Write-Log "  Current capacity: $currentCount/100 (Available: $availableCapacity slots)" "INFO" $logPath
+            
+            if ($currentCount -ge 100) {
+                Write-Log "  Policy is at full capacity, skipping" "WARNING" $logPath
+                continue
+            }
+            
+            # Determine how many URLs we can add to this policy
+            $urlsToAddToPolicy = [Math]::Min($availableCapacity, $remainingUrls.Count)
+            
+            if ($urlsToAddToPolicy -gt 0) {
+                # Take URLs from remaining list
+                $batchUrls = $remainingUrls[0..($urlsToAddToPolicy - 1)]
+                $policyBatches[$policyName] = @{
+                    URLs = $batchUrls
+                    CurrentCount = $currentCount
+                    NewCount = $currentCount + $urlsToAddToPolicy
+                }
+                
+                Write-Log "  Will add $urlsToAddToPolicy URLs to this policy (will become: $($currentCount + $urlsToAddToPolicy)/100)" "SUCCESS" $logPath
+                
+                # Remove these URLs from remaining list
+                foreach ($url in $batchUrls) {
+                    $remainingUrls.Remove($url) | Out-Null
+                }
+            }
+        }
+        catch {
+            Write-Log "  Error checking policy capacity: $_" "ERROR" $logPath
+            continue
+        }
+    }
+    
+    # Display summary of planned changes
+    Write-Log "" "INFO" $logPath
+    Write-Log "========================================" "INFO" $logPath
+    Write-Log "PLANNED CHANGES SUMMARY" "INFO" $logPath
+    Write-Log "========================================" "INFO" $logPath
+    Write-Log "Total URLs to be added: $($urlsToProcess.Count - $remainingUrls.Count)" "INFO" $logPath
+    Write-Log "URLs that couldn't be assigned (all policies full): $($remainingUrls.Count)" $(if ($remainingUrls.Count -gt 0) { "WARNING" } else { "INFO" }) $logPath
+    Write-Log "" "INFO" $logPath
+    
+    foreach ($policyName in $policyBatches.Keys) {
+        $batch = $policyBatches[$policyName]
+        Write-Log "Policy: $policyName" "INFO" $logPath
+        Write-Log "  Current: $($batch.CurrentCount)/100 → New: $($batch.NewCount)/100" "INFO" $logPath
+        Write-Log "  URLs to add: $($batch.URLs.Count)" "INFO" $logPath
+        Write-Log "  Users:" "INFO" $logPath
+        
+        foreach ($url in $batch.URLs) {
+            $item = $urlToItemMap[$url]
+            $userDisplay = if ($item.UserPrincipalName) { 
+                "$($item.UserPrincipalName) ($($item.DisplayName))" 
+            } else { 
+                $url 
+            }
+            Write-Log "    - $userDisplay" "INFO" $logPath
+        }
+        Write-Log "" "INFO" $logPath
+    }
+    
+    # Confirmation prompt
+    if ($policyBatches.Count -eq 0) {
+        Write-Log "No URLs can be added (all policies are at capacity)" "WARNING" $logPath
+    }
+    else {
+        if (-not $AutoConfirm) {
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Yellow
+            Write-Host "CONFIRMATION REQUIRED" -ForegroundColor Yellow
+            Write-Host "========================================" -ForegroundColor Yellow
+            Write-Host "The script will add $($urlsToProcess.Count - $remainingUrls.Count) URLs across $($policyBatches.Count) retention policies." -ForegroundColor Cyan
+            Write-Host ""
+            
+            $confirmation = Read-Host "Do you want to proceed? (yes/no)"
+            
+            if ($confirmation -ne "yes" -and $confirmation -ne "y") {
+                Write-Log "Operation cancelled by user" "WARNING" $logPath
+                Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+                exit 0
+            }
+        }
+        else {
+            Write-Log "AutoConfirm enabled - proceeding without confirmation prompt" "INFO" $logPath
+        }
+        
+        Write-Log "" "INFO" $logPath
+        Write-Log "Proceeding with batch additions..." "SUCCESS" $logPath
+        
+        # Process each policy batch
+        foreach ($policyName in $policyBatches.Keys) {
+            $batch = $policyBatches[$policyName]
+            
+            Write-Log "" "INFO" $logPath
+            Write-Log "========================================" "INFO" $logPath
+            Write-Log "Processing policy: $policyName" "INFO" $logPath
+            Write-Log "Adding batch of $($batch.URLs.Count) URLs..." "INFO" $logPath
+            Write-Log "========================================" "INFO" $logPath
+            
+            # Split into sub-batches of 100 if needed (shouldn't happen but just in case)
+            $maxBatchSize = 100
+            $subBatches = [Math]::Ceiling($batch.URLs.Count / $maxBatchSize)
+            
+            for ($i = 0; $i -lt $subBatches; $i++) {
+                $startIdx = $i * $maxBatchSize
+                $endIdx = [Math]::Min($startIdx + $maxBatchSize - 1, $batch.URLs.Count - 1)
+                $subBatch = $batch.URLs[$startIdx..$endIdx]
+                
+                if ($subBatches -gt 1) {
+                    Write-Log "Processing sub-batch $($i + 1) of $subBatches ($($subBatch.Count) URLs)..." "INFO" $logPath
+                }
+                
+                $attempt = 0
+                $maxAttempts = 3
+                $success = $false
+                
+                while ($attempt -lt $maxAttempts -and -not $success) {
+                    $attempt++
+                    
+                    try {
+                        Set-RetentionCompliancePolicy -Identity $policyName -AddOneDriveLocation $subBatch -ErrorAction Stop
+                        $success = $true
+                        Write-Log "✓ Successfully added batch of $($subBatch.Count) URLs to policy" "SUCCESS" $logPath
+                        
+                        # Mark all URLs in this batch as added
+                        foreach ($url in $subBatch) {
+                            $item = $urlToItemMap[$url]
+                            $item.AddedToPolicy = "Yes"
+                            $item.PolicyName = $policyName
+                            $successfullyAdded += $url
+                            $policyCounts[$policyName]++
+                        }
+                    }
+                    catch {
+                        $errorMessage = $_.Exception.Message
+                        
+                        if ($errorMessage -like "*being deployed*" -or $errorMessage -like "*being processed*" -or $errorMessage -like "*previous changes*") {
+                            if ($attempt -lt $maxAttempts) {
+                                Write-Log "Policy is processing previous changes. Waiting 30 seconds before retry (attempt $attempt/$maxAttempts)..." "WARNING" $logPath
+                                Start-Sleep -Seconds 30
+                            }
+                            else {
+                                Write-Log "✗ Failed to add batch after $maxAttempts attempts: $errorMessage" "ERROR" $logPath
+                                foreach ($url in $subBatch) {
+                                    $failedUrls += $url
+                                }
+                            }
+                        }
+                        else {
+                            Write-Log "✗ Error adding batch to policy: $errorMessage" "ERROR" $logPath
+                            foreach ($url in $subBatch) {
+                                $failedUrls += $url
+                            }
+                            break
+                        }
+                    }
+                }
+                
+                # Small delay between sub-batches if there are multiple
+                if ($subBatches -gt 1 -and $i -lt $subBatches - 1) {
+                    Start-Sleep -Seconds 5
+                }
+            }
+        }
+    }
+    
+    # Add any remaining URLs to failed list
+    foreach ($url in $remainingUrls) {
+        if ($url -notin $failedUrls) {
             $failedUrls += $url
         }
-        
-        # Small delay to avoid throttling
-        Start-Sleep -Milliseconds 500
     }
 
     # Save updated CSV
+    Write-Log "" "INFO" $logPath
     Write-Log "Updating CSV file..." "INFO" $logPath
     try {
         $oneDriveList | Export-Csv -Path $config.csvPath -NoTypeInformation -Force
@@ -639,26 +776,37 @@ if ($urlsToProcess.Count -gt 0) {
     }
 
     # Summary
+    Write-Log "" "INFO" $logPath
     Write-Log "================================================" "INFO" $logPath
-    Write-Log "SUMMARY" "INFO" $logPath
+    Write-Log "FINAL SUMMARY" "INFO" $logPath
     Write-Log "================================================" "INFO" $logPath
     Write-Log "Authentication Method: $selectedAuthMethod" "INFO" $logPath
     if ($QueryGroups) {
         Write-Log "Source: Entra ID Groups ($($GroupNames -join ', '))" "INFO" $logPath
     }
-    Write-Log "Total URLs processed: $($urlsToProcess.Count)" "INFO" $logPath
+    Write-Log "Total URLs in CSV: $($oneDriveList.Count)" "INFO" $logPath
+    Write-Log "URLs already in policies (skipped): $skippedCount" "INFO" $logPath
+    Write-Log "URLs processed in this run: $($urlsToProcess.Count)" "INFO" $logPath
     Write-Log "Successfully added: $($successfullyAdded.Count)" "SUCCESS" $logPath
     Write-Log "Failed: $($failedUrls.Count)" $(if ($failedUrls.Count -gt 0) { "ERROR" } else { "INFO" }) $logPath
-    Write-Log "Skipped (already added): $skippedCount" "INFO" $logPath
+    Write-Log "Not added (all policies full): $($remainingUrls.Count)" $(if ($remainingUrls.Count -gt 0) { "WARNING" } else { "INFO" }) $logPath
     Write-Log "" "INFO" $logPath
     Write-Log "Distribution across policies:" "INFO" $logPath
     foreach ($policyName in $policyNames) {
-        $currentCount = $policyLocations[$policyName].Count + $policyCounts[$policyName]
-        Write-Log "  $policyName : $($policyCounts[$policyName]) added (Total in policy: $currentCount)" "INFO" $logPath
+        try {
+            $policy = Get-RetentionCompliancePolicy -Identity $policyName -DistributionDetail -ErrorAction Stop
+            $currentTotal = $policy.OneDriveLocation.Count
+            $status = if ($currentTotal -ge 100) { "FULL" } else { "Available: $(100 - $currentTotal)" }
+            Write-Log "  $policyName : $($policyCounts[$policyName]) added in this run | Total: $currentTotal/100 [$status]" "INFO" $logPath
+        }
+        catch {
+            Write-Log "  $policyName : $($policyCounts[$policyName]) added in this run | Unable to verify total" "WARNING" $logPath
+        }
     }
     Write-Log "================================================" "INFO" $logPath
     
     if ($failedUrls.Count -gt 0) {
+        Write-Log "" "INFO" $logPath
         Write-Log "Failed URLs:" "ERROR" $logPath
         foreach ($url in $failedUrls) {
             $failedItem = $urlToItemMap[$url]
@@ -666,12 +814,25 @@ if ($urlsToProcess.Count -gt 0) {
             Write-Log "  - $userDisplay" "ERROR" $logPath
         }
     }
+    
+    if ($remainingUrls.Count -gt 0) {
+        Write-Log "" "INFO" $logPath
+        Write-Log "URLs not added (all policies at capacity):" "WARNING" $logPath
+        foreach ($url in $remainingUrls) {
+            $remainingItem = $urlToItemMap[$url]
+            $userDisplay = if ($remainingItem.UserPrincipalName) { $remainingItem.UserPrincipalName } else { $url }
+            Write-Log "  - $userDisplay" "WARNING" $logPath
+        }
+        Write-Log "" "WARNING" $logPath
+        Write-Log "RECOMMENDATION: Add more retention policies to the configuration to accommodate these users" "WARNING" $logPath
+    }
 }
 else {
     Write-Log "No new URLs to add - all entries already in policies" "SUCCESS" $logPath
 }
 
 # Disconnect
+Write-Log "" "INFO" $logPath
 Write-Log "Disconnecting from Security & Compliance Center..." "INFO" $logPath
 Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
 Write-Log "Script completed" "SUCCESS" $logPath
